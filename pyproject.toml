@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strip-line-finder"
+version = "0.2.0"
+description = "A Python library to find thin vertical lines in images and videos using strip-sampling algorithms."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20.0",
+    "pillow>=8.0.0",
+    "opencv-python>=4.5.0",
+    "pandas>=1.1.0"
+]
+
+[project.scripts]
+strip-line-finder = "strip_line_finder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
