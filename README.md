@@ -29,7 +29,7 @@ A Python library and CLI tool designed to detect thin vertical lines in images a
 Clone the repository and install the package using `pip`:
 
 ```bash
-git clone https://github.com/matijalakner/LineFinder.git
+git clone https://github.com/matijalakner/LineTracker.git
 cd strip-line-finder
 pip install -e .
 ```
