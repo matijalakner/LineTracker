@@ -10,8 +10,9 @@ def main():
     img_parser = subparsers.add_parser("image", help="Analyze single image.")
     img_parser.add_argument("image", help="path to input image")
     img_parser.add_argument("--step", type=int, default=100)
-    img_parser.add_argument("--margin", type=int, default=3)
-    img_parser.add_argument("--min-contrast", type=float, default=7.0)
+    img_parser.add_argument("--margin", type=int, default=4)
+    img_parser.add_argument("--min-contrast", type=float, default=10.0)
+    img_parser.add_argument("--x-tolerance", type=float, default=15.0)
     img_parser.add_argument("--output", help="marked image output path")
 
     vid_parser = subparsers.add_parser("video", help="Slice video into frames and analyze.")
@@ -30,14 +31,14 @@ def main():
             for k, v in vars(args).items():
                 setattr(d, k, v)
             for default_arg, val in [("min_width", 1), ("max_width", 14), ("bg_window", 41), 
-                                     ("gap", 2), ("min_brightness", 25.0), ("x_tolerance", 20), 
-                                     ("min_strips", 3), ("keep_all", False)]:
+                                     ("gap", 5), ("min_brightness", 15.0), ("x_tolerance", 10), 
+                                     ("min_strips", 10), ("keep_all", False)]:
                 if not hasattr(d, default_arg):
                     setattr(d, default_arg, val)
 
             width, height, lines, tracks = analyse_image(args.image, d)
             out = args.output or args.image.rsplit(".", 1)[0] + "_marked.png"
-            annotate_image(args.image, lines, tracks, args.margin, out, args.step, d.x_tolerance)
+            annotate_image(args.image, lines, tracks, args.margin, out, args.step, args.x_tolerance)
             print(f"Successfully processed image. Marked image saved to: {out}")
         except Exception as e:
             sys.exit(f"Error: {e}")
