@@ -30,6 +30,7 @@ Clone the repository and install the package using `pip`:
 
 ```bash
 git clone https://github.com/matijalakner/LineTracker.git
+mkdir strip-line-finder
 cd strip-line-finder
 pip install -e .
 ```
