@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -124,32 +123,186 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
     Path(path).write_text("\n".join(out), encoding="utf-8")
 
 
-def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
-                  bin_size=None, auto_params=True, make_report=True, **kwargs):
-    """Sample frames uniformly from a video, run the full image analysis
-    pipeline on each one and write reports automatically.
+def _video_info(video_path):
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+    info = {
+        "path": str(video_path),
+        "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        "fps": cap.get(cv2.CAP_PROP_FPS),
+        "total_frames": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+    }
+    cap.release()
+    fps, total = info["fps"], info["total_frames"]
+    info["duration_sec"] = total / fps if fps > 0 and total > 0 else None
+    return info
 
-    Per sampled frame, a sub-folder ``frame_XXXXX/`` inside ``output_dir`` holds:
-        frame_XXXXX.png, frame_XXXXX_marked.png,
-        frame_XXXXX_histogram.png/.csv, frame_XXXXX_report.txt
 
-    When ``make_report`` is True, the whole-video report is also written to
-    ``output_dir``: video_report.txt, video_report.json, frames_summary.csv
-    and tracks.csv (see report.py).
+# ---------------------------------------------------------------------------
+# Step 1: slice the video into frame files
+# ---------------------------------------------------------------------------
+def split_video(video_path, output_dir=None, num_frames=None, image_format="png"):
+    """Split a video into frames and save them in a new directory.
+
+    num_frames=None saves every frame; an integer saves that many evenly
+    spaced frames. Files are named ``frame_00000.png`` ... where the number is
+    the frame's index in the video. Returns the list of saved paths, in order.
+    """
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    ext = image_format.lower().lstrip(".")
+    if ext == "jpeg":
+        ext = "jpg"
+    if ext not in ("png", "jpg"):
+        raise ValueError("image_format must be 'png' or 'jpg'")
+
+    if output_dir is None:
+        output_dir = video_path.with_name(f"{video_path.stem}_frames")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    pad = max(5, len(str(max(total_frames, 1))))
+
+    def save(idx, frame):
+        path = output_dir / f"frame_{idx:0{pad}d}.{ext}"
+        if not cv2.imwrite(str(path), frame):
+            raise OSError(f"Could not write {path}")
+        return path
+
+    saved = []
+    try:
+        if num_frames is None:
+            idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                saved.append(save(idx, frame))
+                idx += 1
+        else:
+            if total_frames <= 0:
+                raise ValueError("Could not read frame count from video.")
+            if num_frames < 1:
+                raise ValueError("num_frames must be at least 1")
+            if num_frames >= total_frames:
+                indices = range(total_frames)
+            else:
+                indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+            for idx in indices:
+                idx = int(idx)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret:
+                    saved.append(save(idx, frame))
+    finally:
+        cap.release()
+    return saved
+
+
+# ---------------------------------------------------------------------------
+# Step 2: analyse one frame file exactly like a single image
+# ---------------------------------------------------------------------------
+def analyse_frame(frame_path, out_dir, params, bin_size=None, timestamp=0.0,
+                  video_path=None, measurements=None, auto_keys=()):
+    """Run the single-image pipeline on one saved frame.
+
+    analyse_image -> annotate_image -> export_pixel_histogram ->
+    analyze_cleaned_data_from_csv -> text report. Same calls, same order as
+    examples/single_image.py.
+    """
+    frame_path = Path(frame_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = frame_path.stem
+    idx = int(stem.split("_")[-1])
+    marked_path = out_dir / f"{stem}_marked.png"
+    hist_path = out_dir / f"{stem}_histogram.png"
+    csv_path = out_dir / f"{stem}_histogram.csv"
+    report_path = out_dir / f"{stem}_report.txt"
+
+    config = SimpleNamespace(**params)
+    frame_bin = bin_size or max(2, int(round(config.x_tolerance / 2)))
+    cluster_gap = int(round(2.5 * config.x_tolerance))
+
+    # 1. Analyse the image
+    width, height, lines, tracks = analyse_image(str(frame_path), config)
+
+    # 2. Annotate and save the marked image
+    annotate_image(str(frame_path), lines, tracks, config.margin, str(marked_path),
+                   config.step, config.x_tolerance)
+
+    # 3. Pixel histogram and CSV (the CSV is written next to the PNG)
+    export_pixel_histogram(str(frame_path), lines, frame_bin, str(hist_path))
+
+    # 4. Statistics from the histogram CSV
+    hist_stats = analyze_cleaned_data_from_csv(str(csv_path), cluster_gap=cluster_gap)
+
+    # 5. Text report for this frame
+    files = {"frame": frame_path, "marked": marked_path,
+             "histogram": hist_path, "csv": csv_path}
+    _write_frame_report(report_path, video_path, idx, timestamp, width, height,
+                        params, frame_bin, cluster_gap, lines, tracks, hist_stats,
+                        files, measurements, auto_keys)
+
+    return {
+        "frame_index": idx,
+        "timestamp_sec": round(timestamp, 2),
+        "width": width,
+        "height": height,
+        "lines": lines,
+        "tracks": tracks,
+        "statistics": hist_stats,
+        "parameters": params,
+        "measurements": measurements,
+        "frame_path": str(frame_path),
+        "marked_path": str(marked_path),
+        "histogram_path": str(hist_path),
+        "csv_path": str(csv_path),
+        "report_path": str(report_path),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Whole pipeline: slice first, then analyse frame by frame
+# ---------------------------------------------------------------------------
+def process_video(video_path, output_dir=None, num_frames=None, image_format="png",
+                  bin_size=None, auto_params=True, make_report=True, verbose=True,
+                  **kwargs):
+    """Slice a video into frames, then analyse every frame like a single image.
+
+    Output layout (``output_dir`` defaults to ``<video name>_analysis`` next to
+    the video):
+        frames/                  every sliced frame (frame_00000.png ...)
+        analysis/frame_XXXXX/    marked image, histogram png/csv, text report
+        video_report.txt/.json, frames_summary.csv, tracks.csv  (make_report)
 
     Parameters
     ----------
+    num_frames : int or None
+        None (default) slices and analyses EVERY frame. Give a number to use
+        that many evenly spaced frames. Note: every frame is stored as an image,
+        so long videos need a lot of disk space (a 4K PNG is roughly 10 MB).
     auto_params : bool
-        True (default): every frame gets its own parameters measured from its
-        lightness, contrast, noise level and line geometry (see
-        auto_params.py). Any analysis parameter passed explicitly as a keyword
-        argument overrides the automatic value and the rest adapt to it.
+        True (default): parameters are measured per frame (see auto_params.py).
+        Anything given in ``kwargs`` overrides the automatic value.
         False: fixed defaults, as in the single-image tool.
     bin_size : int or None
-        Histogram bin width. None (default) = half the frame's x_tolerance.
+        Histogram bin width; None = half of the frame's x_tolerance.
     **kwargs
         step, margin, min_contrast, min_width, max_width, bg_window, gap,
         min_brightness, x_tolerance, min_strips, keep_all.
+
+    Returns a list with one result dict per analysed frame.
     """
     unknown = set(kwargs) - set(DEFAULT_PARAMS)
     if unknown:
@@ -159,116 +312,51 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
     video_path = Path(video_path)
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
+    info = _video_info(video_path)
+    fps = info["fps"]
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(output_dir) if output_dir else video_path.with_name(
+        f"{video_path.stem}_analysis")
+    frames_dir = output_dir / "frames"
+    analysis_dir = output_dir / "analysis"
 
-    cap = cv2.VideoCapture(str(video_path))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # Step 1: slice the video
+    if verbose:
+        print(f"Slicing {video_path.name} into {frames_dir}/ ...")
+    frame_paths = split_video(video_path, frames_dir, num_frames, image_format)
+    if not frame_paths:
+        raise ValueError("No frames could be read from the video.")
+    if verbose:
+        print(f"Saved {len(frame_paths)} frames. Analysing ...")
 
-    if total_frames <= 0:
-        cap.release()
-        raise ValueError("Could not read frame count from video.")
-
-    if num_frames >= total_frames:
-        frame_indices = list(range(total_frames))
-    else:
-        frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-
+    # Step 2: analyse frame by frame
     results = []
-    for idx in frame_indices:
-        idx = int(idx)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if not ret:
-            warnings.warn(f"Could not read frame {idx}; skipping.")
-            continue
-
-        timestamp = idx / fps if fps > 0 else 0.0
-        stem = f"frame_{idx:05d}"
-        frame_dir = output_dir / stem
-        frame_dir.mkdir(parents=True, exist_ok=True)
-
-        frame_path = frame_dir / f"{stem}.png"
-        marked_path = frame_dir / f"{stem}_marked.png"
-        hist_path = frame_dir / f"{stem}_histogram.png"
-        csv_path = frame_dir / f"{stem}_histogram.csv"
-        report_path = frame_dir / f"{stem}_report.txt"
-
-        # Parameters for this frame: defaults < automatic values < explicit kwargs
-        measurements, auto_keys = None, ()
+    for n, frame_path in enumerate(frame_paths, start=1):
+        idx = int(frame_path.stem.split("_")[-1])
         params = dict(base_params)
+        measurements, auto_keys = None, ()
         if auto_params:
-            auto, measurements = auto_parameters(frame, overrides=kwargs)
+            image = cv2.imread(str(frame_path))
+            auto, measurements = auto_parameters(image, overrides=kwargs)
             auto_keys = tuple(k for k in auto if k not in kwargs)
             params.update({k: auto[k] for k in auto_keys})
-        config = SimpleNamespace(**params)
 
-        frame_bin = bin_size or max(2, int(round(config.x_tolerance / 2)))
-        cluster_gap = int(round(2.5 * config.x_tolerance))
+        result = analyse_frame(
+            frame_path, analysis_dir / frame_path.stem, params, bin_size=bin_size,
+            timestamp=idx / fps if fps > 0 else 0.0, video_path=video_path,
+            measurements=measurements, auto_keys=auto_keys)
+        results.append(result)
+        if verbose:
+            print(f"  [{n}/{len(frame_paths)}] frame {idx}: "
+                  f"{len(result['tracks'])} lines")
 
-        # Save the frame so the image tools can work on it as a normal image
-        cv2.imwrite(str(frame_path), frame)
-
-        # 1. Image analysis
-        width, height, lines, tracks = analyse_image(str(frame_path), config)
-
-        # 2. Annotated image
-        annotate_image(str(frame_path), lines, tracks, config.margin,
-                       str(marked_path), config.step, config.x_tolerance)
-
-        # 3. Histogram + CSV (the CSV is written next to the PNG)
-        export_pixel_histogram(str(frame_path), lines, frame_bin, str(hist_path))
-
-        # 4. Statistical post-processing of the histogram CSV
-        hist_stats = analyze_cleaned_data_from_csv(str(csv_path), cluster_gap=cluster_gap)
-
-        # 5. Text report for this frame
-        files = {
-            "frame": frame_path,
-            "marked": marked_path,
-            "histogram": hist_path,
-            "csv": csv_path,
-        }
-        _write_frame_report(report_path, video_path, idx, timestamp, width, height,
-                            params, frame_bin, cluster_gap, lines, tracks, hist_stats,
-                            files, measurements, auto_keys)
-
-        results.append({
-            "frame_index": idx,
-            "timestamp_sec": round(timestamp, 2),
-            "width": width,
-            "height": height,
-            "lines": lines,
-            "tracks": tracks,
-            "statistics": hist_stats,
-            "parameters": params,
-            "measurements": measurements,
-            "frame_path": str(frame_path),
-            "marked_path": str(marked_path),
-            "histogram_path": str(hist_path),
-            "csv_path": str(csv_path),
-            "report_path": str(report_path),
-        })
-
-    cap.release()
-
-    # 6. Whole-video report, written automatically
-    if make_report and results:
-        video_info = {
-            "path": str(video_path),
-            "width": vid_w,
-            "height": vid_h,
-            "fps": fps,
-            "total_frames": total_frames,
-            "duration_sec": total_frames / fps if fps > 0 else None,
-            "auto_params": auto_params,
-        }
+    # Step 3: whole-video report
+    if make_report:
+        video_info = {**info, "auto_params": auto_params}
         report_files = write_video_report(results, output_dir, video_info)
         for r in results:
             r["video_report_path"] = report_files["report"]
+        if verbose:
+            print(f"Report: {report_files['report']}")
 
     return results
