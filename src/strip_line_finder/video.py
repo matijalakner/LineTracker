@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from .analysis import analyze_cleaned_data_from_csv
+from .auto_params import auto_parameters
 from .image import analyse_image, annotate_image, export_pixel_histogram
 
 # Same defaults as the single-image tool (see examples/single_image.py)
@@ -44,7 +45,8 @@ def _track_summary(tracks):
 
 
 def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
-                        params, bin_size, lines, tracks, hist_stats, files):
+                        params, bin_size, lines, tracks, hist_stats, files,
+                        measurements=None, auto_keys=()):
     summary = _track_summary(tracks)
     out = []
     out.append("=" * 64)
@@ -56,10 +58,18 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
     out.append(f"Resolution:  {width} x {height} px")
     out.append("")
 
+    if measurements:
+        out.append("Measured image properties (0-255 scale)")
+        out.append("-" * 64)
+        out.append(f"  Lightness (mean luminance):  {measurements['lightness']}")
+        out.append(f"  Contrast (P95 - P5):         {measurements['contrast']}")
+        out.append("")
+
     out.append("Parameters")
     out.append("-" * 64)
     for k, v in params.items():
-        out.append(f"  {k:<15} {v}")
+        tag = "  (auto)" if k in auto_keys else ""
+        out.append(f"  {k:<15} {v}{tag}")
     out.append(f"  {'bin_size':<15} {bin_size}")
     out.append("")
 
@@ -120,7 +130,7 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
 
 
 def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
-                  bin_size=10, **kwargs):
+                  bin_size=10, auto_params=True, **kwargs):
     """Sample frames uniformly from a video and run the full image analysis
     pipeline on every one of them.
 
@@ -134,6 +144,11 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
 
     A ``summary.txt`` listing all frames is written to ``output_dir``.
 
+    With ``auto_params=True`` (default) min_contrast and min_brightness are set
+    separately for every frame from its lightness and contrast (see
+    auto_params.py). Any of them passed explicitly as a keyword argument
+    overrides the automatic value. Use ``auto_params=False`` for fixed values.
+
     Extra keyword arguments (step, margin, min_contrast, min_width, max_width,
     bg_window, gap, min_brightness, x_tolerance, min_strips, keep_all) are
     passed on to the image analysis exactly as in the single-image tool.
@@ -141,8 +156,7 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
     unknown = set(kwargs) - set(DEFAULT_PARAMS)
     if unknown:
         raise TypeError(f"Unknown analysis parameter(s): {', '.join(sorted(unknown))}")
-    params = {**DEFAULT_PARAMS, **kwargs}
-    config = SimpleNamespace(**params)
+    base_params = {**DEFAULT_PARAMS, **kwargs}
 
     video_path = Path(video_path)
     if not video_path.exists():
@@ -175,6 +189,15 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
 
         timestamp = idx / fps if fps > 0 else 0.0
         stem = f"frame_{idx:05d}"
+
+        # Parameters for this frame: defaults < automatic values < explicit kwargs
+        measurements, auto_keys = None, ()
+        params = dict(base_params)
+        if auto_params:
+            auto, measurements = auto_parameters(frame)
+            auto_keys = tuple(k for k in auto if k not in kwargs)
+            params.update({k: auto[k] for k in auto_keys})
+        config = SimpleNamespace(**params)
         frame_dir = output_dir / stem
         frame_dir.mkdir(parents=True, exist_ok=True)
 
@@ -208,7 +231,8 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
             "csv": csv_path,
         }
         _write_frame_report(report_path, video_path, idx, timestamp, width, height,
-                            params, bin_size, lines, tracks, hist_stats, files)
+                            params, bin_size, lines, tracks, hist_stats, files,
+                            measurements, auto_keys)
 
         results.append({
             "frame_index": idx,
@@ -218,6 +242,8 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
             "lines": lines,
             "tracks": tracks,
             "statistics": hist_stats,
+            "parameters": params,
+            "measurements": measurements,
             "frame_path": str(frame_path),
             "marked_path": str(marked_path),
             "histogram_path": str(hist_path),

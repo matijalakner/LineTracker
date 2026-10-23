@@ -25,8 +25,13 @@ def main():
     vid_parser.add_argument("--bin-size", type=int, default=10)
     vid_parser.add_argument("--step", type=int, default=DEFAULT_PARAMS["step"])
     vid_parser.add_argument("--margin", type=int, default=DEFAULT_PARAMS["margin"])
-    vid_parser.add_argument("--min-contrast", type=float, default=DEFAULT_PARAMS["min_contrast"])
     vid_parser.add_argument("--x-tolerance", type=int, default=DEFAULT_PARAMS["x_tolerance"])
+    vid_parser.add_argument("--min-contrast", type=float, default=None,
+                            help="fixed value; overrides the automatic one")
+    vid_parser.add_argument("--min-brightness", type=float, default=None,
+                            help="fixed value; overrides the automatic one")
+    vid_parser.add_argument("--no-auto", action="store_true",
+                            help="disable automatic lightness/contrast parameters")
 
     args = parser.parse_args()
 
@@ -45,15 +50,21 @@ def main():
 
     elif args.command == "video":
         try:
+            overrides = {}
+            if args.min_contrast is not None:
+                overrides["min_contrast"] = args.min_contrast
+            if args.min_brightness is not None:
+                overrides["min_brightness"] = args.min_brightness
             results = process_video(
                 args.video,
                 num_frames=args.num_frames,
                 output_dir=args.output_dir,
                 bin_size=args.bin_size,
+                auto_params=not args.no_auto,
                 step=args.step,
                 margin=args.margin,
-                min_contrast=args.min_contrast,
                 x_tolerance=args.x_tolerance,
+                **overrides,
             )
             print(f"Analyzed {len(results)} frames. Per-frame reports and "
                   f"summary.txt are in '{args.output_dir}/'.")
