@@ -8,6 +8,7 @@ import numpy as np
 from .analysis import analyze_cleaned_data_from_csv
 from .auto_params import auto_parameters
 from .image import analyse_image, annotate_image, export_pixel_histogram
+from .report import track_summary, write_video_report
 
 # Same defaults as the single-image tool (see examples/single_image.py)
 DEFAULT_PARAMS = dict(
@@ -24,30 +25,22 @@ DEFAULT_PARAMS = dict(
     keep_all=False,
 )
 
-
-def _track_summary(tracks):
-    """One row of summary numbers per vertical track."""
-    rows = []
-    for members in tracks:
-        centres = [m.center_px for m in members]
-        rows.append({
-            "track_id": members[0].track_id,
-            "mean_x": float(np.mean(centres)),
-            "x_min": int(min(centres)),
-            "x_max": int(max(centres)),
-            "strips": len(members),
-            "mean_width": float(np.mean([m.width_px for m in members])),
-            "mean_contrast": float(np.mean([m.contrast for m in members])),
-            "polarity": max({m.polarity for m in members},
-                            key=[m.polarity for m in members].count),
-        })
-    return rows
+MEASUREMENT_LABELS = {
+    "lightness": "Lightness (mean luminance)",
+    "contrast": "Contrast (P95 - P5)",
+    "noise_sigma": "Noise level (sigma)",
+    "threshold_method": "min_contrast chosen by",
+    "line_strength": "Typical line strength",
+    "line_spacing": "Typical line spacing (px)",
+    "line_drift": "Line drift between strips (px)",
+    "trial_detections": "Trial detections",
+}
 
 
 def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
-                        params, bin_size, lines, tracks, hist_stats, files,
-                        measurements=None, auto_keys=()):
-    summary = _track_summary(tracks)
+                        params, bin_size, cluster_gap, lines, tracks, hist_stats,
+                        files, measurements=None, auto_keys=()):
+    summary = track_summary(tracks)
     out = []
     out.append("=" * 64)
     out.append(f"FRAME REPORT - frame {frame_index}")
@@ -59,10 +52,11 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
     out.append("")
 
     if measurements:
-        out.append("Measured image properties (0-255 scale)")
+        out.append("Measured image properties")
         out.append("-" * 64)
-        out.append(f"  Lightness (mean luminance):  {measurements['lightness']}")
-        out.append(f"  Contrast (P95 - P5):         {measurements['contrast']}")
+        for k, label in MEASUREMENT_LABELS.items():
+            v = measurements.get(k)
+            out.append(f"  {label:<34} {'-' if v is None else v}")
         out.append("")
 
     out.append("Parameters")
@@ -70,7 +64,8 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
     for k, v in params.items():
         tag = "  (auto)" if k in auto_keys else ""
         out.append(f"  {k:<15} {v}{tag}")
-    out.append(f"  {'bin_size':<15} {bin_size}")
+    out.append(f"  {'bin_size':<15} {bin_size}{'  (auto)' if 'x_tolerance' in auto_keys else ''}")
+    out.append(f"  {'cluster_gap':<15} {cluster_gap}{'  (auto)' if 'x_tolerance' in auto_keys else ''}")
     out.append("")
 
     out.append("Detection summary")
@@ -130,28 +125,31 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
 
 
 def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
-                  bin_size=10, auto_params=True, **kwargs):
-    """Sample frames uniformly from a video and run the full image analysis
-    pipeline on every one of them.
+                  bin_size=None, auto_params=True, make_report=True, **kwargs):
+    """Sample frames uniformly from a video, run the full image analysis
+    pipeline on each one and write reports automatically.
 
-    For each sampled frame a sub-folder ``frame_XXXXX/`` is created inside
-    ``output_dir`` containing:
-        frame_XXXXX.png            the extracted frame
-        frame_XXXXX_marked.png     annotated detections (annotate_image)
-        frame_XXXXX_histogram.png  pixel histogram     (export_pixel_histogram)
-        frame_XXXXX_histogram.csv  histogram data
-        frame_XXXXX_report.txt     text report for the frame
+    Per sampled frame, a sub-folder ``frame_XXXXX/`` inside ``output_dir`` holds:
+        frame_XXXXX.png, frame_XXXXX_marked.png,
+        frame_XXXXX_histogram.png/.csv, frame_XXXXX_report.txt
 
-    A ``summary.txt`` listing all frames is written to ``output_dir``.
+    When ``make_report`` is True, the whole-video report is also written to
+    ``output_dir``: video_report.txt, video_report.json, frames_summary.csv
+    and tracks.csv (see report.py).
 
-    With ``auto_params=True`` (default) min_contrast and min_brightness are set
-    separately for every frame from its lightness and contrast (see
-    auto_params.py). Any of them passed explicitly as a keyword argument
-    overrides the automatic value. Use ``auto_params=False`` for fixed values.
-
-    Extra keyword arguments (step, margin, min_contrast, min_width, max_width,
-    bg_window, gap, min_brightness, x_tolerance, min_strips, keep_all) are
-    passed on to the image analysis exactly as in the single-image tool.
+    Parameters
+    ----------
+    auto_params : bool
+        True (default): every frame gets its own parameters measured from its
+        lightness, contrast, noise level and line geometry (see
+        auto_params.py). Any analysis parameter passed explicitly as a keyword
+        argument overrides the automatic value and the rest adapt to it.
+        False: fixed defaults, as in the single-image tool.
+    bin_size : int or None
+        Histogram bin width. None (default) = half the frame's x_tolerance.
+    **kwargs
+        step, margin, min_contrast, min_width, max_width, bg_window, gap,
+        min_brightness, x_tolerance, min_strips, keep_all.
     """
     unknown = set(kwargs) - set(DEFAULT_PARAMS)
     if unknown:
@@ -168,6 +166,8 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
     cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
+    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     if total_frames <= 0:
         cap.release()
@@ -189,15 +189,6 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
 
         timestamp = idx / fps if fps > 0 else 0.0
         stem = f"frame_{idx:05d}"
-
-        # Parameters for this frame: defaults < automatic values < explicit kwargs
-        measurements, auto_keys = None, ()
-        params = dict(base_params)
-        if auto_params:
-            auto, measurements = auto_parameters(frame)
-            auto_keys = tuple(k for k in auto if k not in kwargs)
-            params.update({k: auto[k] for k in auto_keys})
-        config = SimpleNamespace(**params)
         frame_dir = output_dir / stem
         frame_dir.mkdir(parents=True, exist_ok=True)
 
@@ -206,6 +197,18 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
         hist_path = frame_dir / f"{stem}_histogram.png"
         csv_path = frame_dir / f"{stem}_histogram.csv"
         report_path = frame_dir / f"{stem}_report.txt"
+
+        # Parameters for this frame: defaults < automatic values < explicit kwargs
+        measurements, auto_keys = None, ()
+        params = dict(base_params)
+        if auto_params:
+            auto, measurements = auto_parameters(frame, overrides=kwargs)
+            auto_keys = tuple(k for k in auto if k not in kwargs)
+            params.update({k: auto[k] for k in auto_keys})
+        config = SimpleNamespace(**params)
+
+        frame_bin = bin_size or max(2, int(round(config.x_tolerance / 2)))
+        cluster_gap = int(round(2.5 * config.x_tolerance))
 
         # Save the frame so the image tools can work on it as a normal image
         cv2.imwrite(str(frame_path), frame)
@@ -218,10 +221,10 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
                        str(marked_path), config.step, config.x_tolerance)
 
         # 3. Histogram + CSV (the CSV is written next to the PNG)
-        export_pixel_histogram(str(frame_path), lines, bin_size, str(hist_path))
+        export_pixel_histogram(str(frame_path), lines, frame_bin, str(hist_path))
 
         # 4. Statistical post-processing of the histogram CSV
-        hist_stats = analyze_cleaned_data_from_csv(str(csv_path))
+        hist_stats = analyze_cleaned_data_from_csv(str(csv_path), cluster_gap=cluster_gap)
 
         # 5. Text report for this frame
         files = {
@@ -231,8 +234,8 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
             "csv": csv_path,
         }
         _write_frame_report(report_path, video_path, idx, timestamp, width, height,
-                            params, bin_size, lines, tracks, hist_stats, files,
-                            measurements, auto_keys)
+                            params, frame_bin, cluster_gap, lines, tracks, hist_stats,
+                            files, measurements, auto_keys)
 
         results.append({
             "frame_index": idx,
@@ -253,13 +256,19 @@ def process_video(video_path, num_frames=10, output_dir="video_analysis_output",
 
     cap.release()
 
-    # Overall summary across all analysed frames
-    summary = [f"Video: {video_path}",
-               f"Frames analysed: {len(results)}", "",
-               f"{'frame':>7} {'time (s)':>9} {'tracks':>7} {'detections':>11}  report"]
-    for r in results:
-        summary.append(f"{r['frame_index']:>7} {r['timestamp_sec']:>9.2f} "
-                       f"{len(r['tracks']):>7} {len(r['lines']):>11}  {r['report_path']}")
-    (output_dir / "summary.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
+    # 6. Whole-video report, written automatically
+    if make_report and results:
+        video_info = {
+            "path": str(video_path),
+            "width": vid_w,
+            "height": vid_h,
+            "fps": fps,
+            "total_frames": total_frames,
+            "duration_sec": total_frames / fps if fps > 0 else None,
+            "auto_params": auto_params,
+        }
+        report_files = write_video_report(results, output_dir, video_info)
+        for r in results:
+            r["video_report_path"] = report_files["report"]
 
     return results

@@ -3,17 +3,16 @@ import numpy as np
 
 @dataclass
 class Line:
-    row: int           # the sampled (centre) row of the strip
-    start_px: int      # first pixel (x) of the line[cite: 2, 3]
-    end_px: int        # last pixel (x) of the line[cite: 2, 3]
-    center_px: int     # pixel (x) where the line is strongest[cite: 2, 3]
-    width_px: int      # line thickness along the strip[cite: 2, 3]
-    polarity: str      # "dark" or "bright" relative to surroundings[cite: 2, 3]
-    contrast: float    # strength of the line (0-255 levels)[cite: 2, 3]
-    track_id: int = -1 # vertical line this detection belongs to[cite: 2, 3]
+    row: int
+    start_px: int
+    end_px: int
+    center_px: int
+    width_px: int
+    polarity: str
+    contrast: float
+    track_id: int = -1
 
 def moving_median(signal, window):
-    """Median filter (edge padded): the local 'background' level[cite: 2, 3]."""
     window = max(3, window | 1)
     pad = window // 2
     padded = np.pad(signal, pad, mode="edge")
@@ -21,14 +20,15 @@ def moving_median(signal, window):
     return np.median(views, axis=1)
 
 def get_strip(img, row, margin):
-    """Rows [row-margin, row+margin], clamped to the image borders[cite: 2, 3]."""
     h = img.shape[0]
     return img[max(0, row - margin):min(h, row + margin + 1)]
 
-def find_lines_in_profile(profile, min_contrast, max_width, min_width,
-                          bg_window, gap, min_brightness):
-    """Finds line profiles within a strip[cite: 2, 3]."""
-    n = profile.shape[0]
+def profile_signal(profile, bg_window):
+    """Background-subtracted signal of a strip profile (independent of thresholds).
+
+    Returns (mag, lum_dev, bg_lum): the largest per-channel deviation from the
+    local background, the luminance deviation, and the background luminance.
+    """
     dev = np.stack([profile[:, c] - moving_median(profile[:, c], bg_window)
                     for c in range(3)], axis=1)
     mag = np.abs(dev).max(axis=1)
@@ -36,7 +36,13 @@ def find_lines_in_profile(profile, min_contrast, max_width, min_width,
     lum = profile.mean(axis=1)
     lum_dev = lum - moving_median(lum, bg_window)
     bg_lum = lum - lum_dev
+    return mag, lum_dev, bg_lum
 
+
+def find_lines_from_signal(mag, lum_dev, bg_lum, min_contrast, max_width,
+                           min_width, gap, min_brightness):
+    """Threshold a precomputed signal (see profile_signal) into line detections."""
+    n = mag.shape[0]
     mask = (mag >= min_contrast) & (bg_lum >= min_brightness)
 
     found = []
@@ -64,8 +70,16 @@ def find_lines_in_profile(profile, min_contrast, max_width, min_width,
         x = end + 1
     return found
 
+
+def find_lines_in_profile(profile, min_contrast, max_width, min_width,
+                          bg_window, gap, min_brightness):
+    """Finds line profiles within a strip."""
+    mag, lum_dev, bg_lum = profile_signal(profile, bg_window)
+    return find_lines_from_signal(mag, lum_dev, bg_lum, min_contrast, max_width,
+                                  min_width, gap, min_brightness)
+
+
 def link_vertical_lines(lines, x_tolerance, min_strips):
-    """Links detections across multiple strips into unified vertical tracks[cite: 2, 3]."""
     groups = []
     for line in sorted(lines, key=lambda l: l.center_px):
         if groups and line.center_px - groups[-1][-1].center_px <= x_tolerance:
