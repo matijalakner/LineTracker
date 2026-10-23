@@ -63,20 +63,25 @@ annotate_image(
 
 ```python
 from strip_line_finder import process_video
-
-# Uniformly sample 15 frames from a video and extract vertical lines
+ 
+# Sample 12 uniform frames. Each one goes through the full image pipeline
+# (detection, annotation, histogram + CSV, statistics) and gets its own
+# text report inside ./analyzed_video_frames/frame_XXXXX/
 results = process_video(
-    video_path="input_video.mp4",
-    num_frames=15,
-    output_dir="./output_frames",
-    step=100,
-    min_contrast=7.0
+    video_path="input_footage.mp4",
+    num_frames=12,
+    output_dir="./analyzed_video_frames",
+    bin_size=10,        # histogram bin width in pixels
+    step=100,           # Sample every 100th row
+    min_contrast=6.5,   # Adjust contrast sensitivity
+    x_tolerance=20,
 )
-
-# Inspect results per frame
-for frame in results:
-    print(f"Frame {frame['frame_index']} ({frame['timestamp_sec']}s): "
-          f"Found {len(frame['tracks'])} line tracks.")
+ 
+for frame_data in results:
+    print(f"Frame {frame_data['frame_index']} (at {frame_data['timestamp_sec']}s): "
+          f"{len(frame_data['tracks'])} vertical lines -> {frame_data['report_path']}")
+ 
+print("Overall summary: ./analyzed_video_frames/summary.txt")
 ```
 
 ### 3. Analyze Output Statistics
@@ -107,7 +112,7 @@ strip-line-finder image sample.jpg --step 100 --min-contrast 7.0 --output marked
 ### Video Slicing Mode
 
 ```bash
-strip-line-finder video sample.mp4 --num-frames 20 --output-dir ./annotated_frames
+strip-line-finder video input_footage.mp4 --num-frames 12 --min-contrast 6.5 --output-dir ./out
 ```
 
 ---
