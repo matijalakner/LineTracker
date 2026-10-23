@@ -54,7 +54,7 @@ def process_video(video_path, num_frames=10, output_dir=None, **kwargs):
             draw = ImageDraw.Draw(pil_img)
             red = (255, 0, 0)
             step = kwargs.get("step", 100)
-            x_tolerance = kwargs.get("x_tolerance", 20)
+            x_tolerance = kwargs.get("x_tolerance", 10)
 
             for members in tracks:
                 ms = sorted(members, key=lambda m: m.row)
