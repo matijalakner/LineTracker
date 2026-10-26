@@ -7,6 +7,7 @@ from .strip_line_finder.image import analyse_image, annotate_image
 from .strip_line_finder.video import process_video, split_video, DEFAULT_PARAMS
 from .Thorlabs.DC2200 import main_ramp
 from .Thorlabs.PM40 import main_power_measurement
+from .Thorlabs.PM40_DC2200 import main_liv_measurement
 
 OVERRIDABLE = [
     ("step", int), ("margin", int), ("min_contrast", float), ("min_brightness", float),
@@ -89,6 +90,17 @@ def main(argv=None):
     pm_parser.add_argument("--sample-rate", type=float, default=None,
                            help="Sampling frequency in Hz (default: 10.0).")
 
+    # ---- Combined LIV (DC2200 + PM40) -------------------------------------------
+    liv_parser = subparsers.add_parser(
+        "liv", help="Simultaneously ramp DC2200 current and log power with PM40.")
+    liv_parser.add_argument("--i-min", type=float, default=0.0)
+    liv_parser.add_argument("--i-max", type=float, default=0.05)
+    liv_parser.add_argument("--ramp-duration", type=float, default=10.0)
+    liv_parser.add_argument("--update-rate", type=float, default=10.0)
+    liv_parser.add_argument("--cycles", type=int, default=1)
+    liv_parser.add_argument("--wavelength", type=float, default=633.0)
+    liv_parser.add_argument("--averaging-count", type=int, default=10)
+
     args = parser.parse_args(argv)
 
     if args.command == "image":
@@ -169,7 +181,22 @@ def main(argv=None):
             sys.exit("Power measurement interrupted.")
         except Exception as e:
             sys.exit(f"Error: {e}")
-
+    elif args.command == "liv":
+        try:
+            cfg = SimpleNamespace(
+                i_min=args.i_min,
+                i_max=args.i_max,
+                ramp_duration=args.ramp_duration,
+                update_rate=args.update_rate,
+                cycles=args.cycles,
+                wavelength=args.wavelength,
+                averaging_count=args.averaging_count,
+            )
+            main_liv_measurement(cfg)
+        except KeyboardInterrupt:
+            sys.exit("Measurement interrupted; LED output was switched off.")
+        except Exception as e:
+            sys.exit(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
