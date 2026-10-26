@@ -1,140 +1,229 @@
-# Line Finder
+# strip-line-finder
 
-A Python library and CLI tool designed to detect thin vertical lines in images and video streams using a multi-strip profile sampling algorithm.
+A Python library and CLI for detecting thin, roughly vertical lines in images and video frames using multi-strip profile sampling.
 
-`strip-line-finder` samples horizontal row strips across an image or video frame, extracts signal deviation profiles to detect subtle line contrast, and links line detections across vertical strips while discarding random noise and dust.
+Instead of scanning every pixel, `strip-line-finder` samples narrow horizontal strips at regular intervals, estimates the local background of each strip with a moving median, and flags pixels that deviate from it. Detections that line up vertically across several strips are linked into **tracks**; isolated detections (dust, specks, noise) are discarded.
 
----
+## Contents
 
-## Features
+- [How it works](#how-it-works)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Parameter reference](#parameter-reference)
+- [Return values](#return-values)
+- [Command-line interface](#command-line-interface)
+- [Post-processing: spacing statistics](#post-processing-spacing-statistics)
+- [Examples](#examples)
+- [Project structure](#project-structure)
+- [Tuning tips](#tuning-tips)
+- [Known limitations](#known-limitations)
+- [License](#license)
 
-- **Multi-Strip Sampling Engine:** Efficiently processes images by sampling horizontal strips rather than the entire pixel grid.
-- **Robust Line Detection:** Uses moving median background estimation to identify thin vertical lines despite varying light conditions or gradients.
-- **Vertical Tracking:** Links detections across adjacent strips to filter out noise, specks, and dust.
-- **Video Processing:** Uniformly samples frames from video files (`.mp4`, `.avi`, etc.) and processes them individually with annotated visual exports.
-- **Histogram & CSV Exports:** Generates pixel interval distribution histograms and saves detailed CSV/JSON reports.
-- **Statistical Post-Processing:** Built-in statistical tools to compute spacing, averages, and standard deviations across detected lines.
+## How it works
 
----
+1. **Sample strips.** Every `step` rows, take a strip of `2 * margin + 1` rows and average it vertically into a 1-D colour profile (one RGB value per x position).
+2. **Estimate background.** Apply a moving median (`bg_window` pixels) to each colour channel and to overall luminance. This tolerates gradients and uneven lighting.
+3. **Threshold deviations.** A pixel is a candidate if its largest per-channel deviation is at least `min_contrast` and the local background luminance is at least `min_brightness` (so dark regions don't produce false positives).
+4. **Group into lines.** Candidate pixels separated by no more than `gap` pixels are merged. Groups whose width is between `min_width` and `max_width` become a `Line`, labelled `"bright"` or `"dark"` relative to the background.
+5. **Link into tracks.** Lines from different strips whose centres are within `x_tolerance` pixels are grouped. Groups seen in fewer than `min_strips` strips are dropped; the survivors are numbered left to right as tracks.
 
 ## Installation
 
-### Prerequisites
-
-- Python `>= 3.8`
-- `numpy`, `pillow`, `opencv-python`, and `pandas`
-
-### Install Locally
-
-Clone the repository and install the package using `pip`:
+Requires Python 3.8+ with `numpy`, `pillow`, `opencv-python` and `pandas` (installed automatically).
 
 ```bash
-git clone https://github.com/matijalakner/LineTracker.git
-mkdir strip-line-finder
+git clone https://github.com/your-username/strip-line-finder.git
 cd strip-line-finder
 pip install -e .
 ```
 
----
+This also installs the `strip-line-finder` command.
 
-## Quick Start (Python API)
+## Quick start
 
-### 1. Process a Single Image
+### Analyse a single image
+
+`analyse_image` takes any object that exposes the detection parameters as attributes (see the [parameter reference](#parameter-reference)). `types.SimpleNamespace` works well:
 
 ```python
-from strip_line_finder import analyse_image, annotate_image
+from types import SimpleNamespace
+from strip_line_finder import analyse_image, annotate_image, export_pixel_histogram
 
-# Run analysis on an image file
-width, height, lines, tracks = analyse_image("sample.jpg", args=your_args)
-
-# Annotate detected tracks onto an output image
-annotate_image(
-    path="sample.jpg",
-    lines=lines,
-    tracks=tracks,
-    margin=3,
-    out_path="sample_marked.png",
-    step=100,
-    x_tolerance=20
+config = SimpleNamespace(
+    step=100, margin=3, min_contrast=7.0, min_width=1, max_width=14,
+    bg_window=41, gap=2, min_brightness=25.0,
+    x_tolerance=20, min_strips=3, keep_all=False,
 )
+
+width, height, lines, tracks = analyse_image("sample_photo.jpg", config)
+print(f"Detected {len(tracks)} vertical tracks in a {width}x{height} image.")
+
+# Save a copy with detections drawn in red
+annotate_image("sample_photo.jpg", lines, tracks, config.margin,
+               "sample_photo_marked.png", config.step, config.x_tolerance)
+
+# Save a histogram (PNG) and matching CSV of detections per x-interval
+export_pixel_histogram("sample_photo.jpg", lines, bin_size=10,
+                       out_path="sample_photo_histogram.png")
 ```
 
-### 2. Process and Slice Video Files
+If you already have a NumPy array (RGB, `float32`, shape `H x W x 3`), call `analyse_image_array` directly. It takes the same parameters as keyword arguments with defaults:
+
+```python
+from strip_line_finder import analyse_image_array
+
+width, height, lines, tracks = analyse_image_array(img_array, step=50, min_contrast=6.0)
+```
+
+### Analyse a video
+
+`process_video` samples `num_frames` evenly spaced frames, runs the detector on each, and optionally saves annotated PNGs. Any extra keyword arguments are forwarded to `analyse_image_array`.
 
 ```python
 from strip_line_finder import process_video
- 
-# Sample 12 uniform frames. Each one goes through the full image pipeline
-# (detection, annotation, histogram + CSV, statistics) and gets its own
-# text report inside ./analyzed_video_frames/frame_XXXXX/
+
 results = process_video(
     video_path="input_footage.mp4",
     num_frames=12,
-    output_dir="./analyzed_video_frames",
-    bin_size=10,        # histogram bin width in pixels
-    step=100,           # Sample every 100th row
-    min_contrast=6.5,   # Adjust contrast sensitivity
+    output_dir="./analyzed_video_frames",   # optional; omit to skip saving images
+    step=100,
+    min_contrast=6.5,
     x_tolerance=20,
 )
- 
-for frame_data in results:
-    print(f"Frame {frame_data['frame_index']} (at {frame_data['timestamp_sec']}s): "
-          f"{len(frame_data['tracks'])} vertical lines -> {frame_data['report_path']}")
- 
-print("Overall summary: ./analyzed_video_frames/summary.txt")
+
+for frame in results:
+    print(f"Frame {frame['frame_index']} ({frame['timestamp_sec']}s): "
+          f"{len(frame['tracks'])} vertical tracks")
 ```
 
-### 3. Analyze Output Statistics
+## Parameter reference
+
+| Parameter | Default | Description |
+|---|---|---|
+| `step` | `100` | Sample one strip every `step` rows. Smaller values give more strips and slower, denser tracking. |
+| `margin` | `3` | Strip half-height. Each strip covers rows `row - margin` to `row + margin`. |
+| `min_contrast` | `7.0` | Minimum deviation from the local background (0 to 255 scale) for a pixel to count. Lower is more sensitive and noisier. |
+| `min_width` | `1` | Minimum line width in pixels. |
+| `max_width` | `14` | Maximum line width in pixels. Wider features are ignored. |
+| `bg_window` | `41` | Moving-median window (pixels) for background estimation. Should be clearly wider than the widest line. |
+| `gap` | `2` | Maximum run of non-candidate pixels bridged when merging a line. |
+| `min_brightness` | `25.0` | Minimum background luminance. Suppresses detections in very dark regions. |
+| `x_tolerance` | `20` | Maximum horizontal drift (pixels) when linking detections across strips. |
+| `min_strips` | `3` | Minimum number of distinct strips a track must appear in. |
+| `keep_all` | `False` | If `True`, return all raw detections instead of only those that belong to a track. |
+
+## Return values
+
+`analyse_image` and `analyse_image_array` return `(width, height, lines, tracks)`:
+
+- `lines` is a list of `Line` dataclasses:
+
+  | Field | Meaning |
+  |---|---|
+  | `row` | Centre row of the strip the line was found in |
+  | `start_px`, `end_px` | First and last x pixel of the line |
+  | `center_px` | Contrast-weighted centre x position |
+  | `width_px` | Line thickness along the strip |
+  | `polarity` | `"bright"` or `"dark"` relative to the surroundings |
+  | `contrast` | Peak deviation strength (0 to 255 scale) |
+  | `track_id` | Track number (1-based, left to right), or `-1` if unlinked |
+
+- `tracks` is a list of tracks, each a list of `Line` objects sorted by row.
+
+`process_video` returns one dict per successfully decoded frame with the keys `frame_index`, `timestamp_sec`, `width`, `height`, `lines`, and `tracks`.
+
+## Command-line interface
+
+```bash
+# Single image
+strip-line-finder image sample.jpg --step 100 --margin 3 --min-contrast 7.0 --output marked.png
+
+# Video: sample frames and save annotated PNGs
+strip-line-finder video sample.mp4 --num-frames 20 --output-dir ./annotated_frames
+```
+
+Options currently exposed:
+
+| Command | Options |
+|---|---|
+| `image` | `--step`, `--margin`, `--min-contrast`, `--output` (defaults to `<name>_marked.png`) |
+| `video` | `--num-frames` (default 10), `--output-dir` (default `video_frames_output`) |
+
+All other parameters use the defaults from the table above. For full control, use the Python API.
+
+## Post-processing: spacing statistics
+
+`export_pixel_histogram` writes a CSV next to the histogram image with the columns `pixel_interval_start`, `pixel_interval_end`, `number_of_points`. `analyze_cleaned_data_from_csv` reads such a file and:
+
+1. Drops empty intervals.
+2. Clusters intervals whose starts are within 50 px of each other.
+3. Keeps the interval with the highest count in each cluster as one "line" position.
+4. Reports the spacing between consecutive line positions.
 
 ```python
 from strip_line_finder import analyze_cleaned_data_from_csv
 
-# Process CSV histogram data to obtain mean spacing and standard deviation
-report = analyze_cleaned_data_from_csv("histogram_output.csv")
+report = analyze_cleaned_data_from_csv("sample_photo_histogram.csv")
 
-print(f"Total Detected Lines: {report['total_lines']}")
-print(f"Mean Spacing: {report['stats'].get('mean_diff', 0):.2f} px")
-print(f"Std Deviation: {report['stats'].get('std_diff', 0):.2f} px")
+print(f"Total lines: {report['total_lines']}")
+print(f"Pixel indexes: {report['pixel_indexes']}")
+
+stats = report["stats"]
+if stats:
+    print(f"Mean spacing: {stats['mean_diff']:.2f} px")
+    print(f"Std deviation: {stats['std_diff']:.2f} px")
+    print(f"Min / max spacing: {stats['min_diff']} / {stats['max_diff']} px")
 ```
 
----
+`stats` is empty when fewer than two line positions are found.
 
-## Command-Line Interface (CLI)
+## Examples
 
-`strip-line-finder` includes a command-line utility for quick analysis.
+Runnable scripts are in [`examples/`](examples/):
 
-### Single Image Mode
+| File | Demonstrates |
+|---|---|
+| `single_image.py` | Detection, annotation and histogram export for one image |
+| `video_analysis.py` | Frame sampling and per-frame track counts for a video |
+| `statistical_analysis.py` | Spacing statistics from an exported CSV |
 
-```bash
-strip-line-finder image sample.jpg --step 100 --min-contrast 7.0 --output marked.png
-```
+Update the input paths at the top of each script before running.
 
-### Video Slicing Mode
-
-```bash
-strip-line-finder video input_footage.mp4 --num-frames 12 --min-contrast 6.5 --output-dir ./out
-```
-
----
-
-## Project Structure
+## Project structure
 
 ```text
 strip-line-finder/
 ├── pyproject.toml
 ├── README.md
+├── examples/
+│   ├── single_image.py
+│   ├── video_analysis.py
+│   └── statistical_analysis.py
 └── src/
     └── strip_line_finder/
-        ├── __init__.py      # Package public exports
-        ├── _core.py         # Profile filters, line detection algorithms
-        ├── image.py         # Image loaders, annotation & histogram drawers
-        ├── video.py         # OpenCV video frame extraction and pipeline
-        ├── analysis.py      # Statistical post-processing routines
-        └── cli.py           # Command-Line Interface router
+        ├── __init__.py      # Public API exports
+        ├── _core.py         # Line dataclass, background filter, detection, track linking
+        ├── image.py         # Image analysis, annotation, histogram/CSV export
+        ├── video.py         # Frame sampling and video pipeline (OpenCV)
+        ├── analysis.py      # Spacing statistics from histogram CSVs
+        └── cli.py           # Command-line entry point
 ```
 
----
+## Tuning tips
+
+- **Missing faint lines:** lower `min_contrast`, or reduce `step` so more strips vote.
+- **Too many false positives:** raise `min_contrast`, raise `min_strips`, or narrow `max_width`.
+- **Lines being split in two:** increase `gap`.
+- **Slanted lines not linking:** increase `x_tolerance`, or decrease `step` so lines drift less between strips.
+- **Detections in dark areas:** raise `min_brightness`.
+- **Wide lines vanishing into the background:** increase `bg_window` so it stays well above `max_width`.
+
+## Known limitations
+
+- Designed for near-vertical lines; strongly slanted or curved lines will not link reliably.
+- Video frames are sampled uniformly and analysed independently; there is no tracking between frames.
+- `process_video` and the CLI write annotated images only. Line and track data are returned in Python and not exported to CSV or JSON.
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. Add a `LICENSE` file to the repository root before publishing.
