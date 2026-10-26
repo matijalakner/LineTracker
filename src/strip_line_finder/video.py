@@ -1,28 +1,18 @@
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
+from ._core import AnalysisConfig
 from .analysis import analyze_cleaned_data_from_csv
 from .auto_params import auto_parameters
 from .image import analyse_image, annotate_image, export_pixel_histogram
 from .report import track_summary, write_video_report
 
-# Same defaults as the single-image tool (see examples/single_image.py)
-DEFAULT_PARAMS = dict(
-    step=100,
-    margin=3,
-    min_contrast=7.0,
-    min_width=1,
-    max_width=14,
-    bg_window=41,
-    gap=2,
-    min_brightness=25.0,
-    x_tolerance=20,
-    min_strips=3,
-    keep_all=False,
-)
+# Same defaults as the single-image tool: AnalysisConfig is the single source of truth
+DEFAULT_PARAMS = asdict(AnalysisConfig())
 
 MEASUREMENT_LABELS = {
     "lightness": "Lightness (mean luminance)",
@@ -38,7 +28,7 @@ MEASUREMENT_LABELS = {
 
 def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
                         params, bin_size, cluster_gap, lines, tracks, hist_stats,
-                        files, measurements=None, auto_keys=()):
+                        files, measurements=None, auto_keys=(), bin_auto=True):
     summary = track_summary(tracks)
     out = []
     out.append("=" * 64)
@@ -63,7 +53,7 @@ def _write_frame_report(path, video_path, frame_index, timestamp, width, height,
     for k, v in params.items():
         tag = "  (auto)" if k in auto_keys else ""
         out.append(f"  {k:<15} {v}{tag}")
-    out.append(f"  {'bin_size':<15} {bin_size}{'  (auto)' if 'x_tolerance' in auto_keys else ''}")
+    out.append(f"  {'bin_size':<15} {bin_size}{'  (auto)' if bin_auto else ''}")
     out.append(f"  {'cluster_gap':<15} {cluster_gap}{'  (auto)' if 'x_tolerance' in auto_keys else ''}")
     out.append("")
 
@@ -252,7 +242,7 @@ def analyse_frame(frame_path, out_dir, params, bin_size=None, timestamp=0.0,
              "histogram": hist_path, "csv": csv_path}
     _write_frame_report(report_path, video_path, idx, timestamp, width, height,
                         params, frame_bin, cluster_gap, lines, tracks, hist_stats,
-                        files, measurements, auto_keys)
+                        files, measurements, auto_keys, bin_auto=not bin_size)
 
     return {
         "frame_index": idx,
@@ -337,6 +327,8 @@ def process_video(video_path, output_dir=None, num_frames=None, image_format="pn
         measurements, auto_keys = None, ()
         if auto_params:
             image = cv2.imread(str(frame_path))
+            if image is None:
+                raise OSError(f"Could not read frame image: {frame_path}")
             auto, measurements = auto_parameters(image, overrides=kwargs)
             auto_keys = tuple(k for k in auto if k not in kwargs)
             params.update({k: auto[k] for k in auto_keys})

@@ -16,6 +16,9 @@ dependencies = [
     "pandas>=1.1.0",
 ]
 
+[project.optional-dependencies]
+plots = ["matplotlib>=3.3"]
+
 [project.scripts]
 strip-line-finder = "line_finder.cli:main"
 

@@ -103,12 +103,12 @@ def measure_image(img):
     return lightness, float(p95 - p5)
 
 
-def _detect(signals, threshold, max_width, gap, min_brightness):
+def _detect(signals, threshold, max_width, gap, min_brightness, min_width=1):
     """Detections on all strips at one threshold -> list of Line."""
     lines = []
     for row, (mag, lum_dev, bg_lum) in signals:
         for start, end, center, pol, contrast in find_lines_from_signal(
-                mag, lum_dev, bg_lum, threshold, max_width, 1, gap, min_brightness):
+                mag, lum_dev, bg_lum, threshold, max_width, min_width, gap, min_brightness):
             lines.append(Line(row, start, end, center, end - start + 1,
                               pol, round(contrast, 1)))
     return lines
@@ -120,12 +120,12 @@ def _noise_sigma(signals):
 
 
 def _select_min_contrast(signals, lo, width, max_width, gap, min_brightness,
-                         x_tol, min_strips):
+                         x_tol, min_strips, min_width=1):
     """Stability search. Returns (threshold or None, counts, ladder)."""
-    ladder = np.geomspace(lo, LADDER_HIGH, LADDER_STEPS)
+    ladder = np.geomspace(lo, max(LADDER_HIGH, 2 * lo), LADDER_STEPS)  # lo may exceed 60 on noisy frames
     counts, density = [], []
     for t in ladder:
-        lines = _detect(signals, t, max_width, gap, min_brightness)
+        lines = _detect(signals, t, max_width, gap, min_brightness, min_width)
         counts.append(len(link_vertical_lines(lines, x_tol, min_strips)))
         density.append(len(lines) / len(signals))
 
@@ -199,6 +199,7 @@ def auto_parameters(img, overrides=None):
     margin = int(o.get("margin", np.clip(round(REF_MARGIN * sy), 1, 10)))
     max_width = int(o.get("max_width", np.clip(round(REF_MAX_WIDTH * sx), 4, 60)))
     gap = int(o.get("gap", np.clip(round(REF_GAP * sx), 1, 6)))
+    min_width = int(o.get("min_width", 1))
     bg_window = int(o.get("bg_window", _odd(max(round(REF_BG_WINDOW * sx),
                                                 BG_WINDOW_PER_MAX_WIDTH * max_width, 15))))
     lightness, contrast = measure_image(arr)
@@ -208,8 +209,9 @@ def auto_parameters(img, overrides=None):
     rows = list(range(0, height, step))
     signals = [(row, profile_signal(get_strip(arr, row, margin).mean(axis=0), bg_window))
                for row in rows]
-    min_strips_prov = int(np.clip(round(MIN_STRIP_FRACTION * len(rows)), 2, 6))
-    x_tol_prov = REF_X_TOLERANCE * sx
+    # caller-fixed tracking values are honoured while measuring, as documented
+    min_strips_prov = int(o.get("min_strips", np.clip(round(MIN_STRIP_FRACTION * len(rows)), 2, 6)))
+    x_tol_prov = float(o.get("x_tolerance", REF_X_TOLERANCE * sx))
 
     # Pass 2: min_contrast
     sigma = _noise_sigma(signals)
@@ -218,7 +220,8 @@ def auto_parameters(img, overrides=None):
     else:
         lo = max(LADDER_LOW, LADDER_NOISE_K * sigma)
         chosen, _, _ = _select_min_contrast(signals, lo, width, max_width, gap,
-                                            min_brightness, x_tol_prov, min_strips_prov)
+                                            min_brightness, x_tol_prov, min_strips_prov,
+                                            min_width)
         if chosen is not None:
             min_contrast, method = chosen, "stability plateau"
         else:
@@ -227,7 +230,7 @@ def auto_parameters(img, overrides=None):
             method = "noise fallback"
 
     # Pass 3: tracking tolerance from tracked lines at the chosen threshold
-    lines = _detect(signals, min_contrast, max_width, gap, min_brightness)
+    lines = _detect(signals, min_contrast, max_width, gap, min_brightness, min_width)
     tracks = link_vertical_lines(lines, x_tol_prov, min_strips_prov)
     centres = {row: [] for row in rows}
     strengths = []
@@ -242,6 +245,8 @@ def auto_parameters(img, overrides=None):
     if spacing_close:
         x_tol = min(x_tol, SPACING_FRACTION * spacing_close)
     x_tolerance = int(round(np.clip(x_tol, 2, X_TOL_MAX_FRACTION * width)))
+    if "x_tolerance" in o:
+        x_tolerance = int(o["x_tolerance"])
 
     params = {
         "step": step,

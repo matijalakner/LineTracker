@@ -1,193 +1,168 @@
-# strip-line-finder
+# Line Finder
 
-A Python library and CLI for detecting thin, roughly vertical lines in images and video frames using multi-strip profile sampling.
+A Python library and command-line tool that finds thin vertical lines in images and video, measures their spacing, and can drive a Thorlabs DC2200 LED driver for current ramps.
 
-Instead of scanning every pixel, `strip-line-finder` samples narrow horizontal strips at regular intervals, estimates the local background of each strip with a moving median, and flags pixels that deviate from it. Detections that line up vertically across several strips are linked into **tracks**; isolated detections (dust, specks, noise) are discarded.
+**Line detection.** Horizontal strips are sampled at regular rows. In each strip, narrow deviations from a moving-median background are detected, then linked from strip to strip into vertical *tracks*. Isolated specks and dust never form a track, so they are discarded.
 
-## Contents
+**Video.** A video is sliced into frames, every frame is analysed like a single image, and the results are collected into per-frame and whole-video reports. Detection parameters can be measured automatically for each frame.
 
-- [How it works](#how-it-works)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Parameter reference](#parameter-reference)
-- [Return values](#return-values)
-- [Command-line interface](#command-line-interface)
-- [Post-processing: spacing statistics](#post-processing-spacing-statistics)
-- [Examples](#examples)
-- [Project structure](#project-structure)
-- [Tuning tips](#tuning-tips)
-- [Known limitations](#known-limitations)
-- [License](#license)
+**Hardware.** A small module ramps the LED current of a Thorlabs DC2200 up and down.
 
-## How it works
-
-1. **Sample strips.** Every `step` rows, take a strip of `2 * margin + 1` rows and average it vertically into a 1-D colour profile (one RGB value per x position).
-2. **Estimate background.** Apply a moving median (`bg_window` pixels) to each colour channel and to overall luminance. This tolerates gradients and uneven lighting.
-3. **Threshold deviations.** A pixel is a candidate if its largest per-channel deviation is at least `min_contrast` and the local background luminance is at least `min_brightness` (so dark regions don't produce false positives).
-4. **Group into lines.** Candidate pixels separated by no more than `gap` pixels are merged. Groups whose width is between `min_width` and `max_width` become a `Line`, labelled `"bright"` or `"dark"` relative to the background.
-5. **Link into tracks.** Lines from different strips whose centres are within `x_tolerance` pixels are grouped. Groups seen in fewer than `min_strips` strips are dropped; the survivors are numbered left to right as tracks.
+---
 
 ## Installation
 
-Requires Python 3.8+ with `numpy`, `pillow`, `opencv-python` and `pandas` (installed automatically).
+Requires Python 3.8 or newer.
 
 ```bash
 git clone https://github.com/your-username/strip-line-finder.git
 cd strip-line-finder
-pip install -e .
+pip install -e .            # core: numpy, pillow, opencv-python, pandas
+pip install -e ".[plots]"   # adds matplotlib for the spacing-vs-time plots
 ```
 
-This also installs the `strip-line-finder` command.
+The DC2200 ramp additionally needs the `measurement_control` package, which is not installed automatically. Everything except the ramp works without it.
+
+### Import name
+
+`src/` is installed as the package **`line_finder`**, with the subpackages `strip_line_finder` (detection) and `Thorlabs` (DC2200). All public functions are available directly:
+
+```python
+from line_finder import analyse_image, process_video, main_ramp
+```
+
+---
 
 ## Quick start
 
-### Analyse a single image
+### One image
 
-`analyse_image` takes any object that exposes the detection parameters as attributes (see the [parameter reference](#parameter-reference)). `types.SimpleNamespace` works well:
+```python
+from line_finder import AnalysisConfig, analyse_image, annotate_image, export_pixel_histogram
+
+config = AnalysisConfig(min_contrast=7.0)          # other values keep their defaults
+width, height, lines, tracks = analyse_image("sample.jpg", config)
+
+annotate_image("sample.jpg", lines, tracks, config.margin,
+               "sample_marked.png", config.step, config.x_tolerance)
+export_pixel_histogram("sample.jpg", lines, bin_size=10, out_path="sample_histogram.png")
+# -> sample_histogram.png and sample_histogram.csv
+```
+
+### Automatic parameters
+
+```python
+import numpy as np
+from PIL import Image
+from line_finder import AnalysisConfig, analyse_image, auto_parameters
+
+image = np.asarray(Image.open("sample.jpg").convert("RGB"))
+params, measurements = auto_parameters(image)            # or overrides={"step": 80}
+width, height, lines, tracks = analyse_image("sample.jpg", AnalysisConfig(**params))
+```
+
+### A video
+
+```python
+from line_finder import process_video
+
+results = process_video("footage.mp4", output_dir="results", num_frames=12)
+for frame in results:
+    print(frame["frame_index"], frame["timestamp_sec"], len(frame["tracks"]))
+```
+
+### Statistics and plots
+
+```python
+from line_finder import analyze_cleaned_data_from_csv, show_analysis
+
+report = analyze_cleaned_data_from_csv("sample_histogram.csv", cluster_gap=50)
+print(report["total_lines"], report["pixel_indexes"], report["stats"])
+
+show_analysis("results/frames_summary.csv", "MySample")   # needs matplotlib
+```
+
+### DC2200 current ramp
 
 ```python
 from types import SimpleNamespace
-from strip_line_finder import analyse_image, annotate_image, export_pixel_histogram
+from line_finder import main_ramp
 
-config = SimpleNamespace(
-    step=100, margin=3, min_contrast=7.0, min_width=1, max_width=14,
-    bg_window=41, gap=2, min_brightness=25.0,
-    x_tolerance=20, min_strips=3, keep_all=False,
-)
-
-width, height, lines, tracks = analyse_image("sample_photo.jpg", config)
-print(f"Detected {len(tracks)} vertical tracks in a {width}x{height} image.")
-
-# Save a copy with detections drawn in red
-annotate_image("sample_photo.jpg", lines, tracks, config.margin,
-               "sample_photo_marked.png", config.step, config.x_tolerance)
-
-# Save a histogram (PNG) and matching CSV of detections per x-interval
-export_pixel_histogram("sample_photo.jpg", lines, bin_size=10,
-                       out_path="sample_photo_histogram.png")
+main_ramp(SimpleNamespace(i_min=0.0, i_max=0.5, ramp_duration=60.0,
+                          update_rate=20.0, cycles=1))
 ```
 
-If you already have a NumPy array (RGB, `float32`, shape `H x W x 3`), call `analyse_image_array` directly. It takes the same parameters as keyword arguments with defaults:
+Currents are in **amperes**. The DC2200 limit is set to `i_max`, and the LED output is switched off at the end or on any error. Check your LED head's rating first.
 
-```python
-from strip_line_finder import analyse_image_array
+More runnable scripts are in [`examples/`](examples/).
 
-width, height, lines, tracks = analyse_image_array(img_array, step=50, min_contrast=6.0)
-```
+---
 
-### Analyse a video
-
-`process_video` samples `num_frames` evenly spaced frames, runs the detector on each, and optionally saves annotated PNGs. Any extra keyword arguments are forwarded to `analyse_image_array`.
-
-```python
-from strip_line_finder import process_video
-
-results = process_video(
-    video_path="input_footage.mp4",
-    num_frames=12,
-    output_dir="./analyzed_video_frames",   # optional; omit to skip saving images
-    step=100,
-    min_contrast=6.5,
-    x_tolerance=20,
-)
-
-for frame in results:
-    print(f"Frame {frame['frame_index']} ({frame['timestamp_sec']}s): "
-          f"{len(frame['tracks'])} vertical tracks")
-```
-
-## Parameter reference
-
-| Parameter | Default | Description |
-|---|---|---|
-| `step` | `100` | Sample one strip every `step` rows. Smaller values give more strips and slower, denser tracking. |
-| `margin` | `3` | Strip half-height. Each strip covers rows `row - margin` to `row + margin`. |
-| `min_contrast` | `7.0` | Minimum deviation from the local background (0 to 255 scale) for a pixel to count. Lower is more sensitive and noisier. |
-| `min_width` | `1` | Minimum line width in pixels. |
-| `max_width` | `14` | Maximum line width in pixels. Wider features are ignored. |
-| `bg_window` | `41` | Moving-median window (pixels) for background estimation. Should be clearly wider than the widest line. |
-| `gap` | `2` | Maximum run of non-candidate pixels bridged when merging a line. |
-| `min_brightness` | `25.0` | Minimum background luminance. Suppresses detections in very dark regions. |
-| `x_tolerance` | `20` | Maximum horizontal drift (pixels) when linking detections across strips. |
-| `min_strips` | `3` | Minimum number of distinct strips a track must appear in. |
-| `keep_all` | `False` | If `True`, return all raw detections instead of only those that belong to a track. |
-
-## Return values
-
-`analyse_image` and `analyse_image_array` return `(width, height, lines, tracks)`:
-
-- `lines` is a list of `Line` dataclasses:
-
-  | Field | Meaning |
-  |---|---|
-  | `row` | Centre row of the strip the line was found in |
-  | `start_px`, `end_px` | First and last x pixel of the line |
-  | `center_px` | Contrast-weighted centre x position |
-  | `width_px` | Line thickness along the strip |
-  | `polarity` | `"bright"` or `"dark"` relative to the surroundings |
-  | `contrast` | Peak deviation strength (0 to 255 scale) |
-  | `track_id` | Track number (1-based, left to right), or `-1` if unlinked |
-
-- `tracks` is a list of tracks, each a list of `Line` objects sorted by row.
-
-`process_video` returns one dict per successfully decoded frame with the keys `frame_index`, `timestamp_sec`, `width`, `height`, `lines`, and `tracks`.
-
-## Command-line interface
+## Command line
 
 ```bash
-# Single image
-strip-line-finder image sample.jpg --step 100 --margin 3 --min-contrast 7.0 --output marked.png
-
-# Video: sample frames and save annotated PNGs
-strip-line-finder video sample.mp4 --num-frames 20 --output-dir ./annotated_frames
+strip-line-finder image sample.jpg --output marked.png
+strip-line-finder split footage.mp4 --num-frames 20 --format png
+strip-line-finder video footage.mp4 --num-frames 12 --output-dir results
+strip-line-finder ramp --i-min 0.0 --i-max 0.5 --ramp-duration 60 --update-rate 20 --cycles 1
 ```
 
-Options currently exposed:
+| Command | What it does | Main options |
+|---|---|---|
+| `image` | Analyse one image, write `<name>_marked.png` | `--step --margin --min-contrast --output` |
+| `split` | Slice a video into frame images only | `--output-dir --num-frames --format {png,jpg}` |
+| `video` | Slice and analyse every frame, write reports | `--output-dir --num-frames --format --bin-size --no-auto --no-report --quiet` plus overrides |
+| `ramp` | Ramp the DC2200 LED current | `--i-min --i-max --ramp-duration --update-rate --cycles` |
 
-| Command | Options |
-|---|---|
-| `image` | `--step`, `--margin`, `--min-contrast`, `--output` (defaults to `<name>_marked.png`) |
-| `video` | `--num-frames` (default 10), `--output-dir` (default `video_frames_output`) |
+`video` also accepts fixed values that override the automatic ones: `--step --margin --min-contrast --min-brightness --max-width --bg-window --gap --x-tolerance --min-strips`.
 
-All other parameters use the defaults from the table above. For full control, use the Python API.
+Without `--num-frames`, `split` and `video` process **every** frame and save each one as an image. For long or high-resolution videos this needs a lot of disk space.
 
-## Post-processing: spacing statistics
+---
 
-`export_pixel_histogram` writes a CSV next to the histogram image with the columns `pixel_interval_start`, `pixel_interval_end`, `number_of_points`. `analyze_cleaned_data_from_csv` reads such a file and:
+## Detection parameters
 
-1. Drops empty intervals.
-2. Clusters intervals whose starts are within 50 px of each other.
-3. Keeps the interval with the highest count in each cluster as one "line" position.
-4. Reports the spacing between consecutive line positions.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `step` | 100 | Distance in pixels between sampled rows |
+| `margin` | 3 | Rows above and below each sample row that are averaged (strip height = 2·margin + 1) |
+| `min_contrast` | 7.0 | Minimum deviation from the background (0-255 levels) |
+| `min_width` / `max_width` | 1 / 14 | Accepted line thickness in pixels |
+| `bg_window` | 41 | Width of the moving-median background filter |
+| `gap` | 2 | Pixels that may be missing inside one line |
+| `min_brightness` | 25.0 | Minimum background brightness (ignores dark regions) |
+| `x_tolerance` | 20 | Maximum horizontal shift between strips for one track |
+| `min_strips` | 3 | Strips a track must appear on, which filters out specks |
+| `keep_all` | False | Keep detections that did not form a track |
 
-```python
-from strip_line_finder import analyze_cleaned_data_from_csv
+### Automatic parameters
 
-report = analyze_cleaned_data_from_csv("sample_photo_histogram.csv")
+`auto_parameters` measures the frame and returns a full parameter set plus the measurements behind it:
 
-print(f"Total lines: {report['total_lines']}")
-print(f"Pixel indexes: {report['pixel_indexes']}")
+1. **Geometry from resolution:** step, margin, widths and window sizes scale from the 1920×1080 defaults.
+2. **`min_contrast` by stability search:** thresholds are tried on a ladder, and the value is placed inside the longest plateau where the number of tracks stays stable. A noise-based fallback is used if there is no plateau.
+3. **Tracking from the result:** `x_tolerance` follows the measured line drift but stays below half the line spacing, and `min_strips` follows the number of strips.
 
-stats = report["stats"]
-if stats:
-    print(f"Mean spacing: {stats['mean_diff']:.2f} px")
-    print(f"Std deviation: {stats['std_diff']:.2f} px")
-    print(f"Min / max spacing: {stats['min_diff']} / {stats['max_diff']} px")
+Values you pass as `overrides` (or as keyword arguments to `process_video`) are fixed, and the remaining parameters adapt to them.
+
+---
+
+## Video output
+
+```text
+results/
+├── frames/                          sliced frames: frame_00000.png ...
+├── analysis/
+│   └── frame_00000/                 marked image, histogram .png/.csv, frame_00000_report.txt
+├── video_report.txt                 human-readable report for the whole video
+├── video_report.json                the same numbers, machine-readable
+├── frames_summary.csv               one row per frame (input for show_analysis)
+└── tracks.csv                       one row per detected track
 ```
 
-`stats` is empty when fewer than two line positions are found.
+The video report lists typical line count, spacing statistics, the image conditions and parameters used, where lines sit across frames, and which frames to review (no lines found, unusual line count, irregular spacing).
 
-## Examples
-
-Runnable scripts are in [`examples/`](examples/):
-
-| File | Demonstrates |
-|---|---|
-| `single_image.py` | Detection, annotation and histogram export for one image |
-| `video_analysis.py` | Frame sampling and per-frame track counts for a video |
-| `statistical_analysis.py` | Spacing statistics from an exported CSV |
-
-Update the input paths at the top of each script before running.
+---
 
 ## Project structure
 
@@ -195,35 +170,42 @@ Update the input paths at the top of each script before running.
 strip-line-finder/
 ├── pyproject.toml
 ├── README.md
-├── examples/
-│   ├── single_image.py
-│   ├── video_analysis.py
-│   └── statistical_analysis.py
-└── src/
+├── examples/                         runnable scripts (see below)
+└── src/                              installed as `line_finder`
+    ├── __init__.py                   public exports
+    ├── cli.py                        command-line interface
+    ├── Thorlabs/
+    │   └── core.py                   DC2200 current ramp
     └── strip_line_finder/
-        ├── __init__.py      # Public API exports
-        ├── _core.py         # Line dataclass, background filter, detection, track linking
-        ├── image.py         # Image analysis, annotation, histogram/CSV export
-        ├── video.py         # Frame sampling and video pipeline (OpenCV)
-        ├── analysis.py      # Spacing statistics from histogram CSVs
-        └── cli.py           # Command-line entry point
+        ├── _core.py                  AnalysisConfig, detection and track linking
+        ├── image.py                  image analysis, annotation, histogram export
+        ├── video.py                  split_video, per-frame pipeline, process_video
+        ├── auto_params.py            automatic parameter selection
+        ├── report.py                 whole-video reports
+        └── analysis.py               histogram statistics, robust fit and plots
 ```
 
-## Tuning tips
+## Examples
 
-- **Missing faint lines:** lower `min_contrast`, or reduce `step` so more strips vote.
-- **Too many false positives:** raise `min_contrast`, raise `min_strips`, or narrow `max_width`.
-- **Lines being split in two:** increase `gap`.
-- **Slanted lines not linking:** increase `x_tolerance`, or decrease `step` so lines drift less between strips.
-- **Detections in dark areas:** raise `min_brightness`.
-- **Wide lines vanishing into the background:** increase `bg_window` so it stays well above `max_width`.
+| Script | Shows |
+|---|---|
+| `01_single_image.py` | Detect, annotate and export a histogram for one image |
+| `02_auto_parameters.py` | Automatic parameter selection |
+| `03_split_video.py` | Slice a video into frames |
+| `04_video_analysis.py` | Full video pipeline and reports |
+| `05_statistical_analysis.py` | Spacing statistics from a histogram CSV |
+| `06_plot_spacing_over_time.py` | Spacing vs time with a robust polynomial fit |
+| `07_dc2200_ramp.py` | DC2200 current ramp (needs hardware) |
 
-## Known limitations
+Each script takes its input path as an optional command-line argument.
 
-- Designed for near-vertical lines; strongly slanted or curved lines will not link reliably.
-- Video frames are sampled uniformly and analysed independently; there is no tracking between frames.
-- `process_video` and the CLI write annotated images only. Line and track data are returned in Python and not exported to CSV or JSON.
+## Troubleshooting
+
+- **No lines found:** lower `min_contrast`, or try automatic parameters. Check that `step` is smaller than the image height / `min_strips`.
+- **Lines merge into one track:** reduce `x_tolerance`. It should stay below half the line spacing.
+- **`ModuleNotFoundError: matplotlib`:** `pip install -e ".[plots]"`.
+- **`measurement_control` error on `ramp`:** install that package and connect the DC2200 over USB.
 
 ## License
 
-Distributed under the MIT License. Add a `LICENSE` file to the repository root before publishing.
+MIT. Add a `LICENSE` file to the repository root.

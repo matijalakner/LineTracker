@@ -30,7 +30,7 @@ def track_summary(tracks):
             "strips": len(members),
             "mean_width": float(np.mean([m.width_px for m in members])),
             "mean_contrast": float(np.mean([m.contrast for m in members])),
-            "polarity": max(set(polarities), key=polarities.count),
+            "polarity": max(sorted(set(polarities)), key=polarities.count),
         })
     return rows
 
@@ -247,7 +247,7 @@ def write_video_report(results, output_dir, video_info):
 
     L.append("Files")
     L.append("-" * 78)
-    L.append("  Per-frame reports:  frame_XXXXX/frame_XXXXX_report.txt")
+    L.append("  Per-frame reports:  analysis/frame_XXXXX/frame_XXXXX_report.txt")
     for key in ("json", "frames_csv", "tracks_csv"):
         L.append(f"  {paths[key].name}")
     paths["report"].write_text("\n".join(L) + "\n", encoding="utf-8")
