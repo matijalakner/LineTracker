@@ -1,26 +1,37 @@
-
 import usb.core
 import usb.util
 
+THORLABS_VENDOR_ID = 0x1313
 
-VENDOR_ID = 0x1313
-PRODUCT_ID = 0x80C8
+class ThorlabsUSBDriver:
+    """Temporarily detach Linux kernel driver from any Thorlabs USB device for PyVISA-py or direct pyusb access."""
 
-
-class DC2200USBDriver:
-    """Temporarily detach Linux USBTMC from the DC2200 for PyVISA-py access."""
-
-    def __init__(self):
+    def __init__(self, product_id=None):
+        self.product_id = product_id
         self.device = None
         self.detached = False
 
     def __enter__(self):
-        self.device = usb.core.find(
-            idVendor=VENDOR_ID,
-            idProduct=PRODUCT_ID,
-        )
+        # If product_id is provided, match both; otherwise, find any device with Thorlabs Vendor ID (0x1313)
+        if self.product_id is not None:
+            self.device = usb.core.find(
+                idVendor=THORLABS_VENDOR_ID, 
+                idProduct=self.product_id
+            )
+        else:
+            self.device = usb.core.find(
+                idVendor=THORLABS_VENDOR_ID
+            )
+
         if self.device is None:
-            raise RuntimeError("Thorlabs DC2200 USB device not found")
+            if self.product_id is not None:
+                raise RuntimeError(
+                    f"Thorlabs USB device (Vendor ID: {hex(THORLABS_VENDOR_ID)}, Product ID: {hex(self.product_id)}) not found"
+                )
+            else:
+                raise RuntimeError(
+                    f"No Thorlabs USB devices found (Vendor ID: {hex(THORLABS_VENDOR_ID)})"
+                )
 
         try:
             if self.device.is_kernel_driver_active(0):

@@ -6,7 +6,9 @@ from .strip_line_finder.analysis import analyze_cleaned_data_from_csv
 from .strip_line_finder.auto_params import auto_parameters, measure_image
 from .strip_line_finder.report import write_video_report
 # Safe to import: core.py loads the DC2200 driver only when a ramp is started.
-from .Thorlabs.core import main_ramp, ramp_current
+from .Thorlabs.DC2200 import main_ramp, ramp_current
+from .Thorlabs.PM40 import main_power_measurement
+from .Thorlabs.usb_driver import ThorlabsUSBDriver
 
 __all__ = [
     "Line",
@@ -22,4 +24,6 @@ __all__ = [
     "write_video_report",
     "main_ramp",
     "ramp_current",
+    "main_power_measurement",
+    "ThorlabsUSBDriver"
 ]

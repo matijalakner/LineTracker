@@ -1,4 +1,5 @@
 import time
+from .usb_driver import ThorlabsUSBDriver
 
 # Currents are in AMPERES (the DC2200 accepts up to 2 A; check your LED head's rating).
 
@@ -54,12 +55,14 @@ def main_ramp(cfg):
 
     USB_RESOURCE = "USB0::4883::32968::M00937194::0::INSTR"
 
-    with DC2200(
-        communicator=USBCommunicator(
-            usb_resource=USB_RESOURCE,
-            visa_library="@py",
-        )
-    ) as dc2200:
+    # 1. Use ThorlabsUSBDriver to release the Linux kernel USBTMC lock
+    with ThorlabsUSBDriver(product_id=0x80C8):
+        print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
+        
+        # 2. Instantiate and control the actual DC2200 instrument
+        # (Adjust instantiation syntax if DC2200 takes a communicator or resource directly)
+        dc2200 = DC2200(USB_RESOURCE)
+        
         try:
             dc2200.set_user_current_limit(p["i_max"])
             dc2200.configure_constant_current(p["i_min"])
