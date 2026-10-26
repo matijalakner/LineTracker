@@ -14,7 +14,7 @@ OVERRIDABLE = [
 ]
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Strip Line Finder CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -61,25 +61,22 @@ def main():
         vid_parser.add_argument("--" + name.replace("_", "-"), type=typ, default=None,
                                 help="fixed value; overrides the automatic one")
 
-    # ---- ThorLabs commands --------------------------------------------------------
-    ramp_parser = subparsers.add_parser("ramp", help="Initialization of a ramp.")
-    ramp_parser.add_argument("--i-min", type=float, 
-                            default=0.0,
-                            help="Minimal current from which to start.")
-    ramp_parser.add_argument("--i-max", type=float,
-                            default=800.0,
-                            help="Maximal current to which to reach.")
-    ramp_parser.add_argument("--ramp-duration", type=float,
-                            default=300,
-                            help="How long to make the ramp (seconds).")
-    ramp_parser.add_argument("--update-ramp", type=float,
-                            default=20.0,
-                            help="How many times per second do you increase the current.")
-    ramp_parser.add_argument("--cycles", type=int,
-                            default=1,
-                            help="How many times do I repeat the cycle.")
+    # ---- ThorLabs DC2200 ---------------------------------------------------------
+    ramp_parser = subparsers.add_parser(
+        "ramp", help="Ramp the DC2200 LED current up and down (currents in amperes).")
+    ramp_parser.add_argument("--i-min", type=float, default=0.0,
+                             help="Current to start from, in A (default: 0.0).")
+    ramp_parser.add_argument("--i-max", type=float, default=0.8,
+                             help="Current to ramp up to, in A (default: 0.8).")
+    ramp_parser.add_argument("--ramp-duration", type=float, default=300.0,
+                             help="Duration of each up or down ramp, in seconds.")
+    ramp_parser.add_argument("--update-rate", "--update-ramp", dest="update_rate",
+                             type=float, default=20.0,
+                             help="Current updates per second.")
+    ramp_parser.add_argument("--cycles", type=int, default=1,
+                             help="Number of up/down cycles.")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.command == "image":
         try:
@@ -88,7 +85,8 @@ def main():
                                      "margin": args.margin,
                                      "min_contrast": args.min_contrast})
             width, height, lines, tracks = analyse_image(args.image, cfg)
-            out = args.output or args.image.rsplit(".", 1)[0] + "_marked.png"
+            p = Path(args.image)
+            out = args.output or str(p.with_name(p.stem + "_marked.png"))
             annotate_image(args.image, lines, tracks, cfg.margin, out, cfg.step, cfg.x_tolerance)
             print(f"Successfully processed image. Marked image saved to: {out}")
         except Exception as e:
@@ -118,6 +116,8 @@ def main():
                 verbose=not args.quiet,
                 **overrides,
             )
+            if not results:
+                sys.exit("Error: no frames could be read from the video.")
             out_dir = Path(results[0]["frame_path"]).parent.parent
             msg = f"Analysed {len(results)} frames. Results are in '{out_dir}/'."
             if not args.no_report:
@@ -128,15 +128,17 @@ def main():
 
     elif args.command == "ramp":
         try:
-            cfg = SimpleNamespace(**{
-                "i-min" : args.i_min,
-                "i-max" : args.i_max,
-                "ramp_duration" : args.ramp_duration,
-                "update_rate" : args.update_rates,
-                "cycles" : args.cycles
-            })
+            cfg = SimpleNamespace(
+                i_min=args.i_min,
+                i_max=args.i_max,
+                ramp_duration=args.ramp_duration,
+                update_rate=args.update_rate,
+                cycles=args.cycles,
+            )
             main_ramp(cfg)
             print("Ramp completed.")
+        except KeyboardInterrupt:
+            sys.exit("Ramp interrupted; LED output was switched off.")
         except Exception as e:
             sys.exit(f"Error: {e}")
 
