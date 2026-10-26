@@ -1,4 +1,4 @@
-from strip_line_finder import process_video
+from src import process_video
 
 # Sample 12 uniform frames. Each one goes through the full image pipeline
 # (detection, annotation, histogram + CSV, statistics) and gets its own

@@ -3,8 +3,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from .image import analyse_image, annotate_image
-from .video import process_video, split_video, DEFAULT_PARAMS
+from .strip_line_finder.image import analyse_image, annotate_image
+from .strip_line_finder.video import process_video, split_video, DEFAULT_PARAMS
+from .Thorlabs.core import main_ramp
 
 OVERRIDABLE = [
     ("step", int), ("margin", int), ("min_contrast", float), ("min_brightness", float),
@@ -60,6 +61,24 @@ def main():
         vid_parser.add_argument("--" + name.replace("_", "-"), type=typ, default=None,
                                 help="fixed value; overrides the automatic one")
 
+    # ---- ThorLabs commands --------------------------------------------------------
+    ramp_parser = subparsers.add_parser("ramp", help="Initialization of a ramp.")
+    ramp_parser.add_argument("--i-min", type=float, 
+                            default=0.0,
+                            help="Minimal current from which to start.")
+    ramp_parser.add_argument("--i-max", type=float,
+                            default=800.0,
+                            help="Maximal current to which to reach.")
+    ramp_parser.add_argument("--ramp-duration", type=float,
+                            default=300,
+                            help="How long to make the ramp (seconds).")
+    ramp_parser.add_argument("--update-ramp", type=float,
+                            default=20.0,
+                            help="How many times per second do you increase the current.")
+    ramp_parser.add_argument("--cycles", type=int,
+                            default=1,
+                            help="How many times do I repeat the cycle.")
+
     args = parser.parse_args()
 
     if args.command == "image":
@@ -104,6 +123,20 @@ def main():
             if not args.no_report:
                 msg += f" Whole-video report: {out_dir}/video_report.txt"
             print(msg)
+        except Exception as e:
+            sys.exit(f"Error: {e}")
+
+    elif args.command == "ramp":
+        try:
+            cfg = SimpleNamespace(**{
+                "i-min" : args.i_min,
+                "i-max" : args.i_max,
+                "ramp_duration" : args.ramp_duration,
+                "update_rate" : args.update_rates,
+                "cycles" : args.cycles
+            })
+            main_ramp(cfg)
+            print("Ramp completed.")
         except Exception as e:
             sys.exit(f"Error: {e}")
 

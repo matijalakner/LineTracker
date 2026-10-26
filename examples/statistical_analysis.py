@@ -1,4 +1,4 @@
-from strip_line_finder import analyze_cleaned_data_from_csv
+from src import analyze_cleaned_data_from_csv
 
 # Analyze a saved CSV file containing line detection points
 stats_result = analyze_cleaned_data_from_csv("lines.csv")
