@@ -54,28 +54,24 @@ def main_ramp(cfg):
         ) from e
 
     USB_RESOURCE = "USB0::4883::32968::M00937194::0::INSTR"
+    print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
+    
+    communicator = USBCommunicator(USB_RESOURCE)
+    dc2200 = DC2200(communicator)
+    
+    try:
+        dc2200.set_user_current_limit(p["i_max"])
+        dc2200.configure_constant_current(p["i_min"])
+        dc2200.switch_on()
 
-    # 1. Use ThorlabsUSBDriver to release the Linux kernel USBTMC lock
-    with ThorlabsUSBDriver(product_id=0x80C8):
-        print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
-        
-        # 2. Instantiate and control the actual DC2200 instrument
-        # (Adjust instantiation syntax if DC2200 takes a communicator or resource directly)
-        dc2200 = DC2200(USB_RESOURCE)
-        
-        try:
-            dc2200.set_user_current_limit(p["i_max"])
-            dc2200.configure_constant_current(p["i_min"])
-            dc2200.switch_on()
-
-            for _ in range(p["cycles"]):
-                ramp_current(
-                    dc2200, p["i_min"], p["i_max"],
-                    p["ramp_duration"], p["update_rate"],
-                )
-                ramp_current(
-                    dc2200, p["i_max"], p["i_min"],
-                    p["ramp_duration"], p["update_rate"],
-                )
-        finally:
-            dc2200.switch_off()
+        for _ in range(p["cycles"]):
+            ramp_current(
+                dc2200, p["i_min"], p["i_max"],
+                p["ramp_duration"], p["update_rate"],
+            )
+            ramp_current(
+                dc2200, p["i_max"], p["i_min"],
+                p["ramp_duration"], p["update_rate"],
+            )
+    finally:
+        dc2200.switch_off()
