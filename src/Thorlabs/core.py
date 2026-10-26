@@ -52,20 +52,27 @@ def main_ramp(cfg):
             "The 'measurement_control' package is required to control the DC2200."
         ) from e
 
-    with DC2200(communicator=USBCommunicator()) as dc2200:
-        print("LED heads:", dc2200.led_head_info)
+    USB_RESOURCE = "USB0::4883::32968::M00937194::0::INSTR"
 
-        # Use a current limit no higher than your LED's safe rating
-        dc2200.set_user_current_limit(p["i_max"])
-        dc2200.configure_constant_current(p["i_min"])
-        dc2200.switch_on()
-
+    with DC2200(
+        communicator=USBCommunicator(
+            usb_resource=USB_RESOURCE,
+            visa_library="@py",
+        )
+    ) as dc2200:
         try:
+            dc2200.set_user_current_limit(p["i_max"])
+            dc2200.configure_constant_current(p["i_min"])
+            dc2200.switch_on()
+
             for _ in range(p["cycles"]):
-                ramp_current(dc2200, p["i_min"], p["i_max"],
-                             p["ramp_duration"], p["update_rate"])
-                ramp_current(dc2200, p["i_max"], p["i_min"],
-                             p["ramp_duration"], p["update_rate"])
+                ramp_current(
+                    dc2200, p["i_min"], p["i_max"],
+                    p["ramp_duration"], p["update_rate"],
+                )
+                ramp_current(
+                    dc2200, p["i_max"], p["i_min"],
+                    p["ramp_duration"], p["update_rate"],
+                )
         finally:
-            # Ensure LED output is disabled if the script exits or errors
             dc2200.switch_off()
