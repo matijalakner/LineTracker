@@ -1,10 +1,19 @@
+import csv
 import time
-import json
+from contextlib import ExitStack
+from pathlib import Path
+
+from .common import (DC2200_PRODUCT_ID, DC2200_RESOURCE, PM_PRODUCT_ID, PM_RESOURCE,
+                     close_quietly, sleep_until)
+from .usb_driver import ThorlabsUSBDriver
+
+CSV_HEADER = ["time_s", "cycle", "direction", "current_A", "power_W"]
+
 
 def _read_cfg(cfg):
-    """Parses and validates configuration for both DC2200 and PM40."""
+    """Parses and validates configuration for the combined DC2200 + PM40 measurement."""
     get = cfg.get if isinstance(cfg, dict) else (lambda k: getattr(cfg, k))
-    
+
     defaults = {
         "i_min": 0.0,
         "i_max": 0.1,
@@ -12,9 +21,11 @@ def _read_cfg(cfg):
         "update_rate": 10.0,
         "cycles": 1,
         "wavelength": 633.0,
-        "averaging_count": 10
+        "averaging_count": 10,
+        "settle_time": None,   # s to wait after setting the current; None = auto
+        "output_csv": None,    # path; None = do not write a file
     }
-    
+
     p = {}
     for k, default_val in defaults.items():
         try:
@@ -27,17 +38,58 @@ def _read_cfg(cfg):
         raise ValueError("currents must be >= 0 A")
     if p["i_max"] < p["i_min"]:
         raise ValueError("i_max must be >= i_min")
+    if p["ramp_duration"] <= 0 or p["update_rate"] <= 0:
+        raise ValueError("ramp_duration and update_rate must be > 0")
+    if p["cycles"] < 1:
+        raise ValueError("cycles must be >= 1")
     if p["wavelength"] <= 0:
         raise ValueError("wavelength must be > 0 nm")
-        
+    if p["averaging_count"] < 1:
+        raise ValueError("averaging_count must be >= 1")
+
+    period = 1.0 / p["update_rate"]
+    if p["settle_time"] is None:
+        p["settle_time"] = min(0.02, period / 2)
+    if not 0 <= p["settle_time"] < period:
+        raise ValueError("settle_time must be >= 0 and shorter than 1/update_rate")
     return p
 
 
+def _write_csv(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(CSV_HEADER)
+        w.writerows(rows)
+
+
+def _run_ramp(dc2200, powermeter, p, cycle, direction, start, stop,
+              t0, k, dt, n_steps, rows, skip_first):
+    """One up or down ramp. k is the global point counter that schedules the clock."""
+    for step in range(1 if skip_first else 0, n_steps + 1):
+        current = start + (step / n_steps) * (stop - start)
+        sleep_until(t0 + k * dt)
+        dc2200.configure_constant_current(current)
+        time.sleep(p["settle_time"])
+        power_w = powermeter.read_power()
+        rows.append((round(time.monotonic() - t0, 4), cycle, direction, current, power_w))
+        print(f"Current: {current * 1e3:.2f} mA | Power: {power_w * 1e3:.4f} mW")
+        k += 1
+    return k
+
+
 def main_liv_measurement(cfg):
-    """Simultaneously ramps the DC2200 current and logs power from the PM40 power meter."""
+    """Ramps the DC2200 current while logging power from the PM40.
+
+    Returns the list of rows (time_s, cycle, direction, current_A, power_W);
+    if cfg.output_csv is set, the same rows are written there, also when the
+    run is interrupted (partial data is kept).
+    """
     p = _read_cfg(cfg)
 
     try:
+        from measurement_control.communicators import USBCommunicator
         from measurement_control.instruments.thorlabs_dc2200 import DC2200
         from measurement_control.instruments.thorlabs_pm import ThorlabsPM
     except ImportError as e:
@@ -45,57 +97,46 @@ def main_liv_measurement(cfg):
             "The 'measurement_control' package is required to control Thorlabs instruments."
         ) from e
 
-    # Update these resource strings with your actual connected device identifiers
-    DC2200_RESOURCE = "USB0::4883::32968::M00937194::0::INSTR"
-    PM_RESOURCE = "USB0::4883::33016::P0012345::0::INSTR"
-
-    print("Connecting to DC2200 and PM40 via PyVISA...")
-    dc2200 = DC2200(DC2200_RESOURCE)
-    powermeter = ThorlabsPM(PM_RESOURCE)
+    n_steps = max(1, int(round(p["ramp_duration"] * p["update_rate"])))
+    dt = p["ramp_duration"] / n_steps
+    rows = []
 
     try:
-        # Configure Power Meter
-        powermeter.set_wavelength(p["wavelength"])
-        powermeter.set_averaging(p["averaging_count"])
+        with ExitStack() as stack:
+            stack.enter_context(ThorlabsUSBDriver(product_id=DC2200_PRODUCT_ID))
+            stack.enter_context(ThorlabsUSBDriver(product_id=PM_PRODUCT_ID))
+            print("Connecting to DC2200 and PM40 via PyVISA...")
 
-        # Configure DC2200 Driver
-        dc2200.set_user_current_limit(p["i_max"])
-        dc2200.configure_constant_current(p["i_min"])
-        dc2200.switch_on()
-        print("LED Driver switched ON. Starting synchronized ramp & power log...")
+            dc_comm = USBCommunicator(DC2200_RESOURCE)
+            stack.callback(close_quietly, dc_comm)
+            pm_comm = USBCommunicator(PM_RESOURCE)
+            stack.callback(close_quietly, pm_comm)
 
-        total_steps = int(p["ramp_duration"] * p["update_rate"])
-        dt = 1.0 / p["update_rate"]
+            dc2200 = DC2200(dc_comm)
+            powermeter = ThorlabsPM(pm_comm)
 
-        for cycle in range(p["cycles"]):
-            print(f"--- Cycle {cycle + 1}/{p['cycles']} (Ramping Up) ---")
-            
-            # Ramp Up: i_min -> i_max
-            for step in range(total_steps + 1):
-                fraction = step / total_steps if total_steps > 0 else 1.0
-                current = p["i_min"] + fraction * (p["i_max"] - p["i_min"])
-                
-                # Apply current and read power simultaneously
-                dc2200.configure_constant_current(current)
-                power_w = powermeter.read_power()
-                
-                print(f"Current: {current*1e3:.2f} mA | Power: {power_w*1e3:.4f} mW")
-                time.sleep(dt)
+            powermeter.set_wavelength(p["wavelength"])
+            powermeter.set_averaging(p["averaging_count"])
 
-            print(f"--- Cycle {cycle + 1}/{p['cycles']} (Ramping Down) ---")
-            
-            # Ramp Down: i_max -> i_min
-            for step in range(total_steps + 1):
-                fraction = step / total_steps if total_steps > 0 else 1.0
-                current = p["i_max"] - fraction * (p["i_max"] - p["i_min"])
-                
-                dc2200.configure_constant_current(current)
-                power_w = powermeter.read_power()
-                
-                print(f"Current: {current*1e3:.2f} mA | Power: {power_w*1e3:.4f} mW")
-                time.sleep(dt)
+            dc2200.set_user_current_limit(p["i_max"])
+            dc2200.configure_constant_current(p["i_min"])
+            stack.callback(dc2200.switch_off)   # runs before the communicators close
+            dc2200.switch_on()
+            print("LED Driver switched ON. Starting synchronized ramp & power log...")
 
+            t0 = time.monotonic()
+            k = 0
+            for cycle in range(1, p["cycles"] + 1):
+                print(f"--- Cycle {cycle}/{p['cycles']} (Ramping Up) ---")
+                k = _run_ramp(dc2200, powermeter, p, cycle, "up", p["i_min"], p["i_max"],
+                              t0, k, dt, n_steps, rows, skip_first=False)
+                print(f"--- Cycle {cycle}/{p['cycles']} (Ramping Down) ---")
+                # skip_first: the peak was already measured at the end of the up-ramp
+                k = _run_ramp(dc2200, powermeter, p, cycle, "down", p["i_max"], p["i_min"],
+                              t0, k, dt, n_steps, rows, skip_first=True)
     finally:
-        print("Turning off DC2200 LED output...")
-        dc2200.switch_off()
-        print("Measurement completed safely.")
+        if p["output_csv"] and rows:
+            _write_csv(p["output_csv"], rows)
+            print(f"Data saved to {p['output_csv']}")
+        print("LED output switched off. Measurement ended.")
+    return rows

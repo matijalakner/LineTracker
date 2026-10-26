@@ -1,20 +1,23 @@
 import time
+
+from .common import DC2200_PRODUCT_ID, DC2200_RESOURCE, close_quietly
 from .usb_driver import ThorlabsUSBDriver
 
 # Currents are in AMPERES (the DC2200 accepts up to 2 A; check your LED head's rating).
 
 
-def ramp_current(dc2200, start, stop, duration, update_rate):
-    """Linearly ramp current (A) from start to stop over `duration` seconds."""
+def ramp_current(dc2200, start, stop, duration, update_rate, include_start=True):
+    """Linearly ramp current (A) from start to stop over `duration` seconds.
+
+    include_start=False skips the first point (use it for the second half of a
+    cycle so the turning point is not set twice).
+    """
     n_steps = max(2, int(duration * update_rate))
     start_time = time.monotonic()
 
-    for i in range(n_steps + 1):
+    for i in range(0 if include_start else 1, n_steps + 1):
         fraction = i / n_steps
-        current = start + fraction * (stop - start)
-
-        # Set regulated LED current in amperes
-        dc2200.configure_constant_current(current)
+        dc2200.configure_constant_current(start + fraction * (stop - start))
 
         # Keep timing based on a clock, not accumulated sleep time
         remaining = start_time + fraction * duration - time.monotonic()
@@ -53,25 +56,23 @@ def main_ramp(cfg):
             "The 'measurement_control' package is required to control the DC2200."
         ) from e
 
-    USB_RESOURCE = "USB0::4883::32968::M00937194::0::INSTR"
-    print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
-    
-    communicator = USBCommunicator(USB_RESOURCE)
-    dc2200 = DC2200(communicator)
-    
-    try:
-        dc2200.set_user_current_limit(p["i_max"])
-        dc2200.configure_constant_current(p["i_min"])
-        dc2200.switch_on()
+    with ThorlabsUSBDriver(product_id=DC2200_PRODUCT_ID):
+        print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
+        communicator = USBCommunicator(DC2200_RESOURCE)
+        try:
+            dc2200 = DC2200(communicator)
+            try:
+                dc2200.set_user_current_limit(p["i_max"])
+                dc2200.configure_constant_current(p["i_min"])
+                dc2200.switch_on()
 
-        for _ in range(p["cycles"]):
-            ramp_current(
-                dc2200, p["i_min"], p["i_max"],
-                p["ramp_duration"], p["update_rate"],
-            )
-            ramp_current(
-                dc2200, p["i_max"], p["i_min"],
-                p["ramp_duration"], p["update_rate"],
-            )
-    finally:
-        dc2200.switch_off()
+                for _ in range(p["cycles"]):
+                    ramp_current(dc2200, p["i_min"], p["i_max"],
+                                 p["ramp_duration"], p["update_rate"])
+                    ramp_current(dc2200, p["i_max"], p["i_min"],
+                                 p["ramp_duration"], p["update_rate"],
+                                 include_start=False)
+            finally:
+                dc2200.switch_off()
+        finally:
+            close_quietly(communicator)

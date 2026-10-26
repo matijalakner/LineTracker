@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "strip-line-finder"
-version = "0.3.0"
-description = "Find thin vertical lines in images and videos using strip sampling, and drive a Thorlabs DC2200 current ramp."
+version = "0.3.1"
+description = "Find thin vertical lines in images and videos using strip sampling, and drive Thorlabs DC2200 / PM40 instruments."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 plots = ["matplotlib>=3.3"]
+# Needed only for the ramp / pm / liv commands (plus the separate measurement_control package)
+hardware = ["pyusb>=1.2"]
 
 [project.scripts]
 strip-line-finder = "line_finder.cli:main"

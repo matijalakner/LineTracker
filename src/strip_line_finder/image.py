@@ -1,24 +1,10 @@
 import csv
+from pathlib import Path
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from ._core import get_strip, find_lines_in_profile, link_vertical_lines, Line
 
-def analyse_image(path, args):
-    """Loads an image file and processes line detection tracks[cite: 2, 3]."""
-    img = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
-    height, width = img.shape[:2]
-    lines = []
-    for row in range(0, height, args.step):
-        strip = get_strip(img, row, args.margin)
-        profile = strip.mean(axis=0)
-        for start, end, center, pol, contrast in find_lines_in_profile(
-                profile, args.min_contrast, args.max_width, args.min_width,
-                args.bg_window, args.gap, args.min_brightness):
-            lines.append(Line(row, start, end, center, end - start + 1,
-                              pol, round(contrast, 1)))
-    tracks = link_vertical_lines(lines, args.x_tolerance, args.min_strips)
-    kept = [l for l in lines if l.track_id > 0] if not args.keep_all else lines
-    return width, height, kept, tracks
 
 def analyse_image_array(img_np, step=100, margin=3, min_contrast=7.0,
                         min_width=1, max_width=14, bg_window=41,
@@ -39,8 +25,20 @@ def analyse_image_array(img_np, step=100, margin=3, min_contrast=7.0,
     kept = [l for l in lines if l.track_id > 0] if not keep_all else lines
     return width, height, kept, tracks
 
+
+def analyse_image(path, args):
+    """Loads an image file and runs line detection; `args` holds the parameters."""
+    img = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
+    return analyse_image_array(
+        img, step=args.step, margin=args.margin, min_contrast=args.min_contrast,
+        min_width=args.min_width, max_width=args.max_width, bg_window=args.bg_window,
+        gap=args.gap, min_brightness=args.min_brightness,
+        x_tolerance=args.x_tolerance, min_strips=args.min_strips,
+        keep_all=args.keep_all)
+
+
 def annotate_image(path, lines, tracks, margin, out_path, step, x_tolerance):
-    """Annotates detected lines onto a copy of the image[cite: 2, 3]."""
+    """Annotates detected lines onto a copy of the image."""
     img = Image.open(path).convert("RGB")
     w, h = img.size
     draw = ImageDraw.Draw(img)
@@ -65,8 +63,9 @@ def annotate_image(path, lines, tracks, margin, out_path, step, x_tolerance):
                         outline=red, width=2)
     img.save(out_path)
 
+
 def export_pixel_histogram(image_path, lines, bin_size, out_path):
-    """Exports pixel distribution histograms[cite: 3]."""
+    """Exports the histogram of line positions as a PNG plus a CSV next to it."""
     if bin_size < 1:
         raise ValueError("--bin-size must be at least 1")
     image_width = Image.open(image_path).size[0]
@@ -77,7 +76,7 @@ def export_pixel_histogram(image_path, lines, bin_size, out_path):
         if 0 <= idx < len(counts):
             counts[idx] += 1
 
-    csv_path = out_path.rsplit(".", 1)[0] + ".csv"
+    csv_path = Path(out_path).with_suffix(".csv")
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["pixel_interval_start", "pixel_interval_end", "number_of_points"])

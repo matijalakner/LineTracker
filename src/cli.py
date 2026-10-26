@@ -1,5 +1,6 @@
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,7 @@ from .Thorlabs.PM40_DC2200 import main_liv_measurement
 
 OVERRIDABLE = [
     ("step", int), ("margin", int), ("min_contrast", float), ("min_brightness", float),
-    ("max_width", int), ("bg_window", int), ("gap", int),
+    ("min_width", int), ("max_width", int), ("bg_window", int), ("gap", int),
     ("x_tolerance", int), ("min_strips", int),
 ]
 
@@ -59,6 +60,8 @@ def main(argv=None):
                             help="skip the whole-video report")
     vid_parser.add_argument("--quiet", action="store_true",
                             help="do not print progress")
+    vid_parser.add_argument("--keep-all", action="store_true",
+                            help="keep detections that did not form a track")
     for name, typ in OVERRIDABLE:
         vid_parser.add_argument("--" + name.replace("_", "-"), type=typ, default=None,
                                 help="fixed value; overrides the automatic one")
@@ -100,6 +103,10 @@ def main(argv=None):
     liv_parser.add_argument("--cycles", type=int, default=1)
     liv_parser.add_argument("--wavelength", type=float, default=633.0)
     liv_parser.add_argument("--averaging-count", type=int, default=10)
+    liv_parser.add_argument("--settle-time", type=float, default=None,
+                            help="seconds to wait after each current step (default: automatic)")
+    liv_parser.add_argument("--output-csv", default=None,
+                            help="CSV file for the data (default: liv_<timestamp>.csv)")
 
     args = parser.parse_args(argv)
 
@@ -130,6 +137,8 @@ def main(argv=None):
         try:
             overrides = {n: getattr(args, n) for n, _ in OVERRIDABLE
                          if getattr(args, n) is not None}
+            if args.keep_all:
+                overrides["keep_all"] = True
             results = process_video(
                 args.video,
                 output_dir=args.output_dir,
@@ -176,13 +185,14 @@ def main(argv=None):
                 sample_rate=args.sample_rate,
             )
             main_power_measurement(cfg)
-            print("Power measurement completed.")
         except KeyboardInterrupt:
             sys.exit("Power measurement interrupted.")
         except Exception as e:
             sys.exit(f"Error: {e}")
+
     elif args.command == "liv":
         try:
+            out_csv = args.output_csv or f"liv_{datetime.now():%Y%m%d_%H%M%S}.csv"
             cfg = SimpleNamespace(
                 i_min=args.i_min,
                 i_max=args.i_max,
@@ -191,12 +201,15 @@ def main(argv=None):
                 cycles=args.cycles,
                 wavelength=args.wavelength,
                 averaging_count=args.averaging_count,
+                settle_time=args.settle_time,
+                output_csv=out_csv,
             )
             main_liv_measurement(cfg)
         except KeyboardInterrupt:
             sys.exit("Measurement interrupted; LED output was switched off.")
         except Exception as e:
             sys.exit(f"Error: {e}")
+
 
 if __name__ == "__main__":
     main()

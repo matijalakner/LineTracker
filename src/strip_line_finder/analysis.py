@@ -10,6 +10,9 @@ def analyze_cleaned_data_from_csv(csv_path, cluster_gap=50):
     cluster_gap: histogram bins whose start positions are further apart than
     this many pixels are treated as different lines (process_video derives it
     from the frame's x_tolerance).
+
+    Each line's position is the centre of its strongest bin, so positions do
+    not depend on the bin size chosen for the frame.
     """
     df = pd.read_csv(csv_path)
     if df.shape[1] < 3:
@@ -21,19 +24,24 @@ def analyze_cleaned_data_from_csv(csv_path, cluster_gap=50):
         return {"total_lines": 0, "pixel_indexes": [], "stats": {}}
 
     clean_data = []
-    starts, values = [], []
+    starts, stops, values = [], [], []
     previous_start = None  # None, not 0: a line in the first bin is valid
 
-    for start, _stop, num in data:
+    def flush():
+        k = int(np.argmax(values))
+        clean_data.append(int(round((starts[k] + stops[k]) / 2)))
+
+    for start, stop, num in data:
         if previous_start is not None and start - previous_start > cluster_gap:
-            clean_data.append(int(starts[int(np.argmax(values))]))
-            starts, values = [], []
+            flush()
+            starts, stops, values = [], [], []
         starts.append(start)
+        stops.append(stop)
         values.append(num)
         previous_start = start
 
     if starts:
-        clean_data.append(int(starts[int(np.argmax(values))]))
+        flush()
 
     clean_data = sorted(clean_data)
     differences = np.diff(clean_data)
@@ -89,7 +97,9 @@ def show_analysis(path, name, edit=True, deg=3, n_sigma=3.0, out_dir=None):
 
     Returns a dict with the fit results (and the saved image path).
     """
-    import matplotlib.pyplot as plt  # optional dependency, only needed here
+    import matplotlib  # optional dependency, only needed here
+    matplotlib.use("Agg")  # the plot is only saved to a file, so work headless
+    import matplotlib.pyplot as plt
 
     path = Path(path)
     data = pd.read_csv(path)
@@ -145,12 +155,3 @@ def show_analysis(path, name, edit=True, deg=3, n_sigma=3.0, out_dir=None):
     plt.close(fig)
     return {"name": name, "degree": deg, "r2": float(r2), "rmse": float(rmse),
             "outliers": n_out, "points": int(len(inlier)), "image": str(out_png)}
-
-
-if __name__ == "__main__":
-    for _name in ("EHC", "A1", "A3"):
-        _csv = Path("input_output") / _name / "CJG544_R_10X_0000_analysis" / "frames_summary.csv"
-        if _csv.exists():
-            show_analysis(_csv, _name, True)
-        else:
-            print(f"Skipping {_name}: {_csv} not found")
