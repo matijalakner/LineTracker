@@ -9,8 +9,8 @@ from .strip_line_finder.report import write_video_report
 # Safe to import: pyusb and measurement_control are only loaded when a
 # measurement is actually started.
 from .Thorlabs.DC2200 import main_ramp, ramp_current
-from .Thorlabs.PM400 import main_power_measurement
-from .Thorlabs.PM400_DC2200 import main_liv_measurement
+from .Thorlabs.PM40 import main_power_measurement
+from .Thorlabs.PM40_DC2200 import main_liv_measurement
 from .Thorlabs.usb_driver import ThorlabsUSBDriver
 
 __all__ = [

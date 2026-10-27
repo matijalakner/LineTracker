@@ -40,23 +40,20 @@ def main_power_measurement(cfg):
     Returns a list of (time_s, power_W).
     """
     p = _read_cfg(cfg)
-
     try:
-        from measurement_control.communicators import USBCommunicator
-        from measurement_control.instruments.thorlabs_pm import ThorlabsPM
+        import pyvisa
     except ImportError as e:
-        raise RuntimeError(
-            "The 'measurement_control' package is required to control the Thorlabs power meter."
-        ) from e
+        raise RuntimeError(f"pyvisa is required: {e}") from e
 
     readings = []
     with ThorlabsUSBDriver(product_id=PM_PRODUCT_ID):
-        print("Kernel USB driver detached. Connecting to Thorlabs Power Meter via PyVISA...")
-        communicator = USBCommunicator(PM_RESOURCE)
+        rm = pyvisa.ResourceManager("@py")   # pure-Python backend, uses pyusb
+        inst = rm.open_resource(PM_RESOURCE)
         try:
-            powermeter = ThorlabsPM(communicator)
-            powermeter.set_wavelength(p["wavelength"])
-            powermeter.set_averaging(p["averaging_count"])
+            inst.timeout = 5000
+            print("Connected to:", inst.query("*IDN?").strip())
+            inst.write(f"SENS:CORR:WAV {p['wavelength']}")
+            inst.write(f"SENS:AVER:COUN {p['averaging_count']}")
             print(f"Starting power logging at {p['wavelength']} nm...")
 
             total = max(1, int(round(p["sample_duration"] * p["sample_rate"])))
@@ -64,10 +61,11 @@ def main_power_measurement(cfg):
             t0 = time.monotonic()
             for i in range(total):
                 sleep_until(t0 + i * dt)
-                power = powermeter.read_power()  # Watts
+                power = float(inst.query("MEAS:POW?"))   # Watts
                 readings.append((time.monotonic() - t0, power))
                 print(f"Sample {i + 1}/{total} - Power: {power * 1e3:.4f} mW")
         finally:
-            close_quietly(communicator)
+            close_quietly(inst)
+            close_quietly(rm)
     print("Power measurement sequence completed.")
     return readings
