@@ -13,11 +13,11 @@ def make_resource(product_id, serial):
 
 
 DC2200_PRODUCT_ID = 0x80C8   # 32968
-PM_PRODUCT_ID = 0x80F8       # 33016  (was 0x8078 in PM40.py - did not match the resource string)
+PM_PRODUCT_ID = 0x8075       # 33016  (was 0x8078 in PM40.py - did not match the resource string)
 
 # Replace the serial numbers with those of your instruments.
 DC2200_RESOURCE = make_resource(DC2200_PRODUCT_ID, "M00937194")
-PM_RESOURCE = make_resource(PM_PRODUCT_ID, "P0012345")
+PM_RESOURCE = make_resource(PM_PRODUCT_ID, "P5003335")
 
 
 def sleep_until(deadline):

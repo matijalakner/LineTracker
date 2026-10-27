@@ -105,7 +105,7 @@ def main_liv_measurement(cfg):
         with ExitStack() as stack:
             stack.enter_context(ThorlabsUSBDriver(product_id=DC2200_PRODUCT_ID))
             stack.enter_context(ThorlabsUSBDriver(product_id=PM_PRODUCT_ID))
-            print("Connecting to DC2200 and PM40 via PyVISA...")
+            print("Connecting to DC2200 and PM400 via PyVISA...")
 
             dc_comm = USBCommunicator(DC2200_RESOURCE)
             stack.callback(close_quietly, dc_comm)
