@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from .strip_line_finder.image import analyse_image, annotate_image
 from .strip_line_finder.video import process_video, split_video, DEFAULT_PARAMS
 from .Thorlabs.DC2200 import main_ramp
-from .Thorlabs.PM40 import main_power_measurement
-from .Thorlabs.PM40_DC2200 import main_liv_measurement
+from .Thorlabs.PM400 import main_power_measurement
+from .Thorlabs.PM400_DC2200 import main_liv_measurement
 
 OVERRIDABLE = [
     ("step", int), ("margin", int), ("min_contrast", float), ("min_brightness", float),
