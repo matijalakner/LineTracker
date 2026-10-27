@@ -1,7 +1,55 @@
+"""Thorlabs PM400 power meter, driven directly over SCPI with PyVISA.
+
+The `measurement_control` package has no power meter driver, so the meter is
+talked to here. The `PM400` class is also used by PM400_DC2200.py.
+"""
 import time
 
 from .common import PM_PRODUCT_ID, PM_RESOURCE, close_quietly, sleep_until
 from .usb_driver import ThorlabsUSBDriver
+
+
+class PM400:
+    """Minimal PM400 driver: wavelength, averaging and power readings (W)."""
+
+    def __init__(self, resource=PM_RESOURCE, timeout_ms=5000):
+        try:
+            import pyvisa
+        except ImportError as e:
+            raise RuntimeError(
+                "pyvisa is required for the PM400: pip install pyvisa pyvisa-py pyusb"
+            ) from e
+        self._rm = pyvisa.ResourceManager("@py")   # pure-Python backend, uses pyusb
+        try:
+            self._inst = self._rm.open_resource(resource)
+        except Exception:
+            close_quietly(self._rm)
+            raise
+        self._inst.timeout = timeout_ms
+
+    def idn(self):
+        return self._inst.query("*IDN?").strip()
+
+    def set_wavelength(self, nm):
+        self._inst.write(f"SENS:CORR:WAV {nm}")
+
+    def set_averaging(self, count):
+        self._inst.write(f"SENS:AVER:COUN {int(count)}")
+
+    def read_power(self):
+        """Optical power in watts."""
+        return float(self._inst.query("MEAS:POW?"))
+
+    def close(self):
+        close_quietly(self._inst)
+        close_quietly(self._rm)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
 
 def _read_cfg(cfg):
@@ -34,26 +82,19 @@ def _read_cfg(cfg):
 
 
 def main_power_measurement(cfg):
-    """Power measurement loop for Thorlabs PM-series power meters.
+    """Power measurement loop for the Thorlabs PM400.
 
     cfg needs: wavelength (nm), averaging_count, sample_duration (s), sample_rate (Hz).
     Returns a list of (time_s, power_W).
     """
     p = _read_cfg(cfg)
-    try:
-        import pyvisa
-    except ImportError as e:
-        raise RuntimeError(f"pyvisa is required: {e}") from e
 
     readings = []
     with ThorlabsUSBDriver(product_id=PM_PRODUCT_ID):
-        rm = pyvisa.ResourceManager("@py")   # pure-Python backend, uses pyusb
-        inst = rm.open_resource(PM_RESOURCE)
-        try:
-            inst.timeout = 5000
-            print("Connected to:", inst.query("*IDN?").strip())
-            inst.write(f"SENS:CORR:WAV {p['wavelength']}")
-            inst.write(f"SENS:AVER:COUN {p['averaging_count']}")
+        with PM400() as meter:
+            print("Connected to:", meter.idn())
+            meter.set_wavelength(p["wavelength"])
+            meter.set_averaging(p["averaging_count"])
             print(f"Starting power logging at {p['wavelength']} nm...")
 
             total = max(1, int(round(p["sample_duration"] * p["sample_rate"])))
@@ -61,11 +102,8 @@ def main_power_measurement(cfg):
             t0 = time.monotonic()
             for i in range(total):
                 sleep_until(t0 + i * dt)
-                power = float(inst.query("MEAS:POW?"))   # Watts
+                power = meter.read_power()
                 readings.append((time.monotonic() - t0, power))
                 print(f"Sample {i + 1}/{total} - Power: {power * 1e3:.4f} mW")
-        finally:
-            close_quietly(inst)
-            close_quietly(rm)
     print("Power measurement sequence completed.")
     return readings

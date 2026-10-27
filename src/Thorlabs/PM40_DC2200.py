@@ -5,13 +5,14 @@ from pathlib import Path
 
 from .common import (DC2200_PRODUCT_ID, DC2200_RESOURCE, PM_PRODUCT_ID, PM_RESOURCE,
                      close_quietly, sleep_until)
+from .PM400 import PM400
 from .usb_driver import ThorlabsUSBDriver
 
 CSV_HEADER = ["time_s", "cycle", "direction", "current_A", "power_W"]
 
 
 def _read_cfg(cfg):
-    """Parses and validates configuration for the combined DC2200 + PM40 measurement."""
+    """Parses and validates configuration for the combined DC2200 + PM400 measurement."""
     get = cfg.get if isinstance(cfg, dict) else (lambda k: getattr(cfg, k))
 
     defaults = {
@@ -80,7 +81,10 @@ def _run_ramp(dc2200, powermeter, p, cycle, direction, start, stop,
 
 
 def main_liv_measurement(cfg):
-    """Ramps the DC2200 current while logging power from the PM40.
+    """Ramps the DC2200 current while logging power from the PM400.
+
+    The DC2200 is controlled through `measurement_control`; the PM400 is read
+    directly over SCPI with PyVISA (see PM400.py).
 
     Returns the list of rows (time_s, cycle, direction, current_A, power_W);
     if cfg.output_csv is set, the same rows are written there, also when the
@@ -91,10 +95,9 @@ def main_liv_measurement(cfg):
     try:
         from measurement_control.communicators import USBCommunicator
         from measurement_control.instruments.thorlabs_dc2200 import DC2200
-        from measurement_control.instruments.thorlabs_pm import ThorlabsPM
     except ImportError as e:
         raise RuntimeError(
-            "The 'measurement_control' package is required to control Thorlabs instruments."
+            f"Could not import the DC2200 driver from 'measurement_control': {e}"
         ) from e
 
     n_steps = max(1, int(round(p["ramp_duration"] * p["update_rate"])))
@@ -109,12 +112,11 @@ def main_liv_measurement(cfg):
 
             dc_comm = USBCommunicator(DC2200_RESOURCE)
             stack.callback(close_quietly, dc_comm)
-            pm_comm = USBCommunicator(PM_RESOURCE)
-            stack.callback(close_quietly, pm_comm)
-
             dc2200 = DC2200(dc_comm)
-            powermeter = ThorlabsPM(pm_comm)
 
+            powermeter = PM400(PM_RESOURCE)
+            stack.callback(powermeter.close)
+            print("PM400 connected:", powermeter.idn())
             powermeter.set_wavelength(p["wavelength"])
             powermeter.set_averaging(p["averaging_count"])
 
