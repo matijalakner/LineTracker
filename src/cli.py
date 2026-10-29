@@ -38,6 +38,18 @@ def add_detection_options(parser):
                            default=None, help=text)
 
 
+def _create_dirs():
+    OUT_DIRS = [
+        "output/image",
+        "output/video",
+        "output/ramp",
+        "output/liv"
+    ]
+    for path in OUT_DIRS:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
 def config_from_args(args):
     return DetectionConfig(**{n: getattr(args, n) for n, _, _ in DETECTION_OPTIONS
                               if getattr(args, n) is not None})
@@ -137,8 +149,9 @@ def run_control(args):
         input_amps = main_ramp(SimpleNamespace(i_min=args.i_min, i_max=args.i_max,
                                   ramp_duration=args.ramp_duration,
                                   update_rate=args.update_rate, cycles=args.cycles))
-        output = "output/ramp/current_input.csv"
-        path = Path(output)
+        output = "output/ramp"
+        name = Path("current_input.csv").stem
+        path = Path(output) / name
         RAMP_CSV_HEADER = ["time_s", "current_A"]
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -153,7 +166,7 @@ def run_control(args):
     elif args.command == "set":
         main_set_current(SimpleNamespace(current=args.current))
     elif args.command == "liv":
-        out_csv = args.output_csv or f"liv_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        out_csv = args.output_csv or f"{datetime.now():%Y%m%d_%H%M%S}.csv"
         main_liv_measurement(SimpleNamespace(
             i_min=args.i_min, i_max=args.i_max, ramp_duration=args.ramp_duration,
             update_rate=args.update_rate, cycles=args.cycles,
@@ -183,6 +196,7 @@ def run_analysis(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    _create_dirs()
     try:
         if args.group == "control":
             run_control(args)
