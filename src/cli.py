@@ -1,214 +1,191 @@
+"""Command line interface.
+
+    strip-line-finder control  {ramp, pm, set, liv}      instrument control
+    strip-line-finder analysis {image, video, analyse}   line detection
+"""
 import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from .strip_line_finder.image import analyse_image, annotate_image
-from .strip_line_finder.video import process_video, split_video, DEFAULT_PARAMS
-from .Thorlabs.DC2200 import main_ramp
-from .Thorlabs.PM400 import main_power_measurement
-from .Thorlabs.PM400_DC2200 import main_liv_measurement
+from .strip_line_finder.analysis import analyse_spacing
+from .strip_line_finder.detect import DetectionConfig
+from .strip_line_finder.image import analyse_image
+from .strip_line_finder.video import process_video
+from .ThorLabs.DC2200 import main_ramp, main_set_current
+from .ThorLabs.PM400 import main_power_measurement
+from .ThorLabs.PM400_DC2200 import main_liv_measurement
 
-OVERRIDABLE = [
-    ("step", int), ("margin", int), ("min_contrast", float), ("min_brightness", float),
-    ("min_width", int), ("max_width", int), ("bg_window", int), ("gap", int),
-    ("x_tolerance", int), ("min_strips", int),
+DETECTION_OPTIONS = [
+    ("n_blocks", int, "horizontal bands that must agree (default 8)"),
+    ("bg_window", int, "background filter width in px (default: from image width)"),
+    ("k", float, "noise floor in sigmas (default 3)"),
+    ("rel", float, "threshold as a fraction of the strong responses (default 0.25)"),
+    ("min_dist", int, "minimum distance between lines in px (default: from image width)"),
+    ("x_tol", int, "max x shift between bands for one line in px (default: from image width)"),
+    ("min_fraction", float, "fraction of bands a line must appear in (default 0.6)"),
+    ("band_rel", float, "per-band visibility as a fraction of the threshold (default 0.5)"),
+    ("smooth", int, "smoothing width in px (default 5)"),
+    ("half_width", int, "painted half-width of a line in px (default 1)"),
 ]
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Strip Line Finder CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+def add_detection_options(parser):
+    group = parser.add_argument_group("detection options")
+    for name, typ, text in DETECTION_OPTIONS:
+        group.add_argument("--" + name.replace("_", "-"), dest=name, type=typ,
+                           default=None, help=text)
 
-    # ---- image -------------------------------------------------------------
-    img_parser = subparsers.add_parser("image", help="Analyze single image.")
-    img_parser.add_argument("image", help="path to input image")
-    img_parser.add_argument("--step", type=int, default=DEFAULT_PARAMS["step"])
-    img_parser.add_argument("--margin", type=int, default=DEFAULT_PARAMS["margin"])
-    img_parser.add_argument("--min-contrast", type=float, default=DEFAULT_PARAMS["min_contrast"])
-    img_parser.add_argument("--output", help="marked image output path")
 
-    # ---- split (slice only) --------------------------------------------------
-    split_parser = subparsers.add_parser(
-        "split", help="Only slice a video into frame images (no analysis).")
-    split_parser.add_argument("video", help="path to input video")
-    split_parser.add_argument("--output-dir", default=None,
-                              help="folder to create (default: <video name>_frames)")
-    split_parser.add_argument("--num-frames", type=int, default=None,
-                              help="number of evenly spaced frames (default: every frame)")
-    split_parser.add_argument("--format", dest="image_format", choices=["png", "jpg"],
-                              default="png", help="frame image format")
+def config_from_args(args):
+    return DetectionConfig(**{n: getattr(args, n) for n, _, _ in DETECTION_OPTIONS
+                              if getattr(args, n) is not None})
 
-    # ---- video (slice, then analyse every frame) --------------------------------
-    vid_parser = subparsers.add_parser(
-        "video", help="Slice a video into frames, then analyse each frame like a "
-                      "single image and write per-frame and whole-video reports.")
-    vid_parser.add_argument("video", help="path to input video")
-    vid_parser.add_argument("--output-dir", default=None,
-                            help="results folder (default: <video name>_analysis)")
-    vid_parser.add_argument("--num-frames", type=int, default=None,
-                            help="number of evenly spaced frames (default: EVERY frame - "
-                                 "needs a lot of disk space for long videos)")
-    vid_parser.add_argument("--format", dest="image_format", choices=["png", "jpg"],
-                            default="png", help="frame image format")
-    vid_parser.add_argument("--bin-size", type=int, default=None,
-                            help="histogram bin width (default: automatic)")
-    vid_parser.add_argument("--no-auto", action="store_true",
-                            help="disable automatic per-frame parameters")
-    vid_parser.add_argument("--no-report", action="store_true",
-                            help="skip the whole-video report")
-    vid_parser.add_argument("--quiet", action="store_true",
-                            help="do not print progress")
-    vid_parser.add_argument("--keep-all", action="store_true",
-                            help="keep detections that did not form a track")
-    for name, typ in OVERRIDABLE:
-        vid_parser.add_argument("--" + name.replace("_", "-"), type=typ, default=None,
-                                help="fixed value; overrides the automatic one")
 
-    # ---- ThorLabs DC2200 ---------------------------------------------------------
-    ramp_parser = subparsers.add_parser(
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="strip-line-finder", description="Strip Line Finder CLI")
+    groups = parser.add_subparsers(dest="group", required=True)
+
+    # ======================================================================
+    # control
+    # ======================================================================
+    control = groups.add_parser("control", help="Control the Thorlabs instruments.")
+    ctl = control.add_subparsers(dest="command", required=True)
+
+    ramp = ctl.add_parser(
         "ramp", help="Ramp the DC2200 LED current up and down (currents in amperes).")
-    ramp_parser.add_argument("--i-min", type=float, default=0.0,
-                             help="Current to start from, in A (default: 0.0).")
-    ramp_parser.add_argument("--i-max", type=float, default=0.8,
-                             help="Current to ramp up to, in A (default: 0.8).")
-    ramp_parser.add_argument("--ramp-duration", type=float, default=300.0,
-                             help="Duration of each up or down ramp, in seconds.")
-    ramp_parser.add_argument("--update-rate", "--update-ramp", dest="update_rate",
-                             type=float, default=20.0,
-                             help="Current updates per second.")
-    ramp_parser.add_argument("--cycles", type=int, default=1,
-                             help="Number of up/down cycles.")
+    ramp.add_argument("--i-min", type=float, default=0.0,
+                      help="Current to start from, in A (default: 0.0).")
+    ramp.add_argument("--i-max", type=float, default=0.8,
+                      help="Current to ramp up to, in A (default: 0.8).")
+    ramp.add_argument("--ramp-duration", type=float, default=300.0,
+                      help="Duration of each up or down ramp, in seconds.")
+    ramp.add_argument("--update-rate", "--update-ramp", dest="update_rate",
+                      type=float, default=20.0, help="Current updates per second.")
+    ramp.add_argument("--cycles", type=int, default=1, help="Number of up/down cycles.")
 
-    # ---- Thorlabs PM40 -----------------------------------------------------------
-    pm_parser = subparsers.add_parser(
-        "pm", help="Detect light power with PM40 powermeter.")
-    pm_parser.add_argument("--wavelength", type=float, default=None,
-                           help="Set the detection wavelength in nm (default: 633.0).")
-    pm_parser.add_argument("--averaging-count", type=int, default=None,
-                           help="Number of samples to average (default: 10).")
-    pm_parser.add_argument("--sample-duration", type=float, default=None,
-                           help="Total measurement duration in seconds (default: 5.0).")
-    pm_parser.add_argument("--sample-rate", type=float, default=None,
-                           help="Sampling frequency in Hz (default: 10.0).")
+    pm = ctl.add_parser("pm", help="Detect light power with the PM40 power meter.")
+    pm.add_argument("--wavelength", type=float, default=None,
+                    help="Set the detection wavelength in nm (default: 633.0).")
+    pm.add_argument("--averaging-count", type=int, default=None,
+                    help="Number of samples to average (default: 10).")
+    pm.add_argument("--sample-duration", type=float, default=None,
+                    help="Total measurement duration in seconds (default: 5.0).")
+    pm.add_argument("--sample-rate", type=float, default=None,
+                    help="Sampling frequency in Hz (default: 10.0).")
 
-    # ---- Combined LIV (DC2200 + PM40) -------------------------------------------
-    liv_parser = subparsers.add_parser(
-        "liv", help="Simultaneously ramp DC2200 current and log power with PM40.")
-    liv_parser.add_argument("--i-min", type=float, default=0.0)
-    liv_parser.add_argument("--i-max", type=float, default=0.05)
-    liv_parser.add_argument("--ramp-duration", type=float, default=10.0)
-    liv_parser.add_argument("--update-rate", type=float, default=10.0)
-    liv_parser.add_argument("--cycles", type=int, default=1)
-    liv_parser.add_argument("--wavelength", type=float, default=633.0)
-    liv_parser.add_argument("--averaging-count", type=int, default=10)
-    liv_parser.add_argument("--settle-time", type=float, default=None,
-                            help="seconds to wait after each current step (default: automatic)")
-    liv_parser.add_argument("--output-csv", default=None,
-                            help="CSV file for the data (default: liv_<timestamp>.csv)")
+    st = ctl.add_parser(
+        "set", help="Set the DC2200 light output to a constant current and leave it on "
+                    "(0 switches the output off).")
+    st.add_argument("current", type=float, help="LED current in amperes (0 - 2 A).")
 
-    args = parser.parse_args(argv)
+    liv = ctl.add_parser(
+        "liv", help="Simultaneously ramp DC2200 current and log power with the PM40.")
+    liv.add_argument("--i-min", type=float, default=0.0)
+    liv.add_argument("--i-max", type=float, default=0.05)
+    liv.add_argument("--ramp-duration", type=float, default=10.0)
+    liv.add_argument("--update-rate", type=float, default=10.0)
+    liv.add_argument("--cycles", type=int, default=1)
+    liv.add_argument("--wavelength", type=float, default=633.0)
+    liv.add_argument("--averaging-count", type=int, default=10)
+    liv.add_argument("--settle-time", type=float, default=None,
+                     help="seconds to wait after each current step (default: automatic)")
+    liv.add_argument("--output-csv", default=None,
+                     help="CSV file for the data (default: liv_<timestamp>.csv)")
 
-    if args.command == "image":
-        try:
-            cfg = SimpleNamespace(**{**DEFAULT_PARAMS,
-                                     "step": args.step,
-                                     "margin": args.margin,
-                                     "min_contrast": args.min_contrast})
-            width, height, lines, tracks = analyse_image(args.image, cfg)
-            p = Path(args.image)
-            out = args.output or str(p.with_name(p.stem + "_marked.png"))
-            annotate_image(args.image, lines, tracks, cfg.margin, out, cfg.step, cfg.x_tolerance)
-            print(f"Successfully processed image. Marked image saved to: {out}")
-        except Exception as e:
-            sys.exit(f"Error: {e}")
+    # ======================================================================
+    # analysis
+    # ======================================================================
+    analysis = groups.add_parser("analysis", help="Detect and analyse vertical lines.")
+    ana = analysis.add_subparsers(dest="command", required=True)
 
-    elif args.command == "split":
-        try:
-            frames = split_video(args.video, args.output_dir, args.num_frames,
-                                 args.image_format)
-            where = frames[0].parent if frames else args.output_dir
-            print(f"Saved {len(frames)} frames to '{where}/'.")
-        except Exception as e:
-            sys.exit(f"Error: {e}")
+    img = ana.add_parser(
+        "image", help="Analyse one image; saves the marked image and the line data "
+                      "in <output-dir>/image/<name>/.")
+    img.add_argument("image", help="path to input image")
+    img.add_argument("--output-dir", default="output",
+                     help="root output folder (default: output)")
+    img.add_argument("--plot", action="store_true",
+                     help="also save the line-strength plot")
+    add_detection_options(img)
 
-    elif args.command == "video":
-        try:
-            overrides = {n: getattr(args, n) for n, _ in OVERRIDABLE
-                         if getattr(args, n) is not None}
-            if args.keep_all:
-                overrides["keep_all"] = True
-            results = process_video(
-                args.video,
-                output_dir=args.output_dir,
-                num_frames=args.num_frames,
-                image_format=args.image_format,
-                bin_size=args.bin_size,
-                auto_params=not args.no_auto,
-                make_report=not args.no_report,
-                verbose=not args.quiet,
-                **overrides,
-            )
-            if not results:
-                sys.exit("Error: no frames could be read from the video.")
-            out_dir = Path(results[0]["frame_path"]).parent.parent
-            msg = f"Analysed {len(results)} frames. Results are in '{out_dir}/'."
-            if not args.no_report:
-                msg += f" Whole-video report: {out_dir}/video_report.txt"
-            print(msg)
-        except Exception as e:
-            sys.exit(f"Error: {e}")
+    vid = ana.add_parser(
+        "video", help="Take a frame every N seconds and analyse each frame. Frames go "
+                      "to <output-dir>/video/frames/<name>/, marked frames and lines.csv "
+                      "to <output-dir>/video/<name>/.")
+    vid.add_argument("video", help="path to input video")
+    vid.add_argument("-n", "--interval", type=float, default=1.0,
+                     help="seconds between analysed frames (default: 1.0)")
+    vid.add_argument("--output-dir", default="output",
+                     help="root output folder (default: output)")
+    vid.add_argument("--quiet", action="store_true", help="do not print progress")
+    add_detection_options(vid)
 
-    elif args.command == "ramp":
-        try:
-            cfg = SimpleNamespace(
-                i_min=args.i_min,
-                i_max=args.i_max,
-                ramp_duration=args.ramp_duration,
-                update_rate=args.update_rate,
-                cycles=args.cycles,
-            )
-            main_ramp(cfg)
-            print("Ramp completed.")
-        except KeyboardInterrupt:
-            sys.exit("Ramp interrupted; LED output was switched off.")
-        except Exception as e:
-            sys.exit(f"Error: {e}")
+    an = ana.add_parser(
+        "analyse", help="Plot the mean distance between the lines (error = std) "
+                        "against time, from <output-dir>/video/<name>/lines.csv.")
+    an.add_argument("name", help="video name (folder under <output-dir>/video/)")
+    an.add_argument("--output-dir", default="output",
+                    help="root output folder (default: output)")
+    return parser
 
+
+def run_control(args):
+    if args.command == "ramp":
+        main_ramp(SimpleNamespace(i_min=args.i_min, i_max=args.i_max,
+                                  ramp_duration=args.ramp_duration,
+                                  update_rate=args.update_rate, cycles=args.cycles))
+        print("Ramp completed.")
     elif args.command == "pm":
-        try:
-            cfg = SimpleNamespace(
-                wavelength=args.wavelength,
-                averaging_count=args.averaging_count,
-                sample_duration=args.sample_duration,
-                sample_rate=args.sample_rate,
-            )
-            main_power_measurement(cfg)
-        except KeyboardInterrupt:
-            sys.exit("Power measurement interrupted.")
-        except Exception as e:
-            sys.exit(f"Error: {e}")
-
+        main_power_measurement(SimpleNamespace(
+            wavelength=args.wavelength, averaging_count=args.averaging_count,
+            sample_duration=args.sample_duration, sample_rate=args.sample_rate))
+    elif args.command == "set":
+        main_set_current(SimpleNamespace(current=args.current))
     elif args.command == "liv":
-        try:
-            out_csv = args.output_csv or f"liv_{datetime.now():%Y%m%d_%H%M%S}.csv"
-            cfg = SimpleNamespace(
-                i_min=args.i_min,
-                i_max=args.i_max,
-                ramp_duration=args.ramp_duration,
-                update_rate=args.update_rate,
-                cycles=args.cycles,
-                wavelength=args.wavelength,
-                averaging_count=args.averaging_count,
-                settle_time=args.settle_time,
-                output_csv=out_csv,
-            )
-            main_liv_measurement(cfg)
-        except KeyboardInterrupt:
-            sys.exit("Measurement interrupted; LED output was switched off.")
-        except Exception as e:
-            sys.exit(f"Error: {e}")
+        out_csv = args.output_csv or f"liv_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        main_liv_measurement(SimpleNamespace(
+            i_min=args.i_min, i_max=args.i_max, ramp_duration=args.ramp_duration,
+            update_rate=args.update_rate, cycles=args.cycles,
+            wavelength=args.wavelength, averaging_count=args.averaging_count,
+            settle_time=args.settle_time, output_csv=out_csv))
+
+
+def run_analysis(args):
+    if args.command == "image":
+        name = Path(args.image).stem
+        out_dir = Path(args.output_dir) / "image" / name
+        res = analyse_image(args.image, out_dir, config_from_args(args), plot=args.plot)
+        print(f"{len(res['lines'])} lines at x = {[int(x) for x in res['lines']]}")
+        print(f"Results are in '{out_dir}/'.")
+    elif args.command == "video":
+        rows = process_video(args.video, output_dir=args.output_dir,
+                             interval=args.interval, config=config_from_args(args),
+                             verbose=not args.quiet)
+        name = Path(args.video).stem
+        print(f"Analysed {len(rows)} frames. Results are in "
+              f"'{Path(args.output_dir) / 'video' / name}/'.")
+    elif args.command == "analyse":
+        res = analyse_spacing(args.name, args.output_dir)
+        print(f"{res['frames']} frames used. Plot: {res['plot_path']}  "
+              f"Data: {res['csv_path']}")
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        if args.group == "control":
+            run_control(args)
+        else:
+            run_analysis(args)
+    except KeyboardInterrupt:
+        if args.group == "control" and args.command in ("ramp", "liv"):
+            sys.exit("Interrupted; LED output was switched off.")
+        sys.exit("Interrupted.")
+    except Exception as e:
+        sys.exit(f"Error: {e}")
 
 
 if __name__ == "__main__":

@@ -1,157 +1,87 @@
+"""Line spacing over time, from the lines.csv written by process_video."""
+import csv
+import json
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 
-def analyze_cleaned_data_from_csv(csv_path, cluster_gap=50):
-    """Analyzes CSV outputs using statistical filters.
+def read_lines_csv(path):
+    """Rows of lines.csv as dicts: time (float), frame (int), lines (list)."""
+    with open(path, newline="", encoding="utf-8") as f:
+        return [{"time": float(r["time"]), "frame": int(r["frame"]),
+                 "lines": json.loads(r["lines"])} for r in csv.DictReader(f)]
 
-    cluster_gap: histogram bins whose start positions are further apart than
-    this many pixels are treated as different lines (process_video derives it
-    from the frame's x_tolerance).
 
-    Each line's position is the centre of its strongest bin, so positions do
-    not depend on the bin size chosen for the frame.
+def spacing_stats(xs):
+    """(mean, std, n_lines) of the distances between neighbouring lines.
+
+    Needs at least 2 lines. The std is the sample std (ddof=1) of the
+    individual spacings, so it is NaN when the frame has only one spacing.
     """
-    df = pd.read_csv(csv_path)
-    if df.shape[1] < 3:
-        raise ValueError("CSV must have at least 3 columns: start, end, count")
-    data = df.iloc[:, :3].to_numpy()
-    data = data[data[:, 2] != 0]
-
-    if data.shape[0] == 0:
-        return {"total_lines": 0, "pixel_indexes": [], "stats": {}}
-
-    clean_data = []
-    starts, stops, values = [], [], []
-    previous_start = None  # None, not 0: a line in the first bin is valid
-
-    def flush():
-        k = int(np.argmax(values))
-        clean_data.append(int(round((starts[k] + stops[k]) / 2)))
-
-    for start, stop, num in data:
-        if previous_start is not None and start - previous_start > cluster_gap:
-            flush()
-            starts, stops, values = [], [], []
-        starts.append(start)
-        stops.append(stop)
-        values.append(num)
-        previous_start = start
-
-    if starts:
-        flush()
-
-    clean_data = sorted(clean_data)
-    differences = np.diff(clean_data)
-
-    stats = {}
-    if len(differences) > 0:
-        stats = {
-            "mean_diff": float(np.mean(differences)),
-            "std_diff": float(np.std(differences)),
-            "min_diff": int(np.min(differences)),
-            "max_diff": int(np.max(differences)),
-        }
-
-    return {
-        "total_lines": len(clean_data),
-        "pixel_indexes": clean_data,
-        "stats": stats,
-    }
+    xs = np.sort(np.asarray(xs, dtype=float))
+    if len(xs) < 2:
+        return None
+    d = np.diff(xs)
+    std = float(np.std(d, ddof=1)) if len(d) > 1 else float("nan")
+    return float(d.mean()), std, len(xs)
 
 
-def robust_polyfit(x, y, deg, n_sigma=3.0, n_iter=10):
-    """Polynomial fit with iterative outlier rejection (median/MAD based).
-
-    Returns (coefficients, inlier_mask)."""
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    if len(x) < deg + 2:
-        raise ValueError(f"need at least {deg + 2} points for a degree-{deg} fit")
-    mask = np.ones(len(y), dtype=bool)
-    coef = np.polyfit(x, y, deg)
-    for _ in range(n_iter):
-        resid = y - np.polyval(coef, x)
-        sigma = 1.4826 * np.median(np.abs(resid - np.median(resid)))
-        if sigma == 0:  # (near-)perfect fit: nothing to reject
-            break
-        new_mask = np.abs(resid) < n_sigma * sigma
-        if new_mask.sum() < deg + 2:  # would leave too few points to fit
-            break
-        if np.array_equal(new_mask, mask):
-            break
-        mask = new_mask
-        coef = np.polyfit(x[mask], y[mask], deg)
-    return coef, mask
+def find_video_dir(name, output_dir="output"):
+    """output/video/<name>, or ``name`` itself if it is a folder with lines.csv."""
+    p = Path(name)
+    if (p / "lines.csv").exists():
+        return p
+    d = Path(output_dir) / "video" / name
+    if not (d / "lines.csv").exists():
+        raise FileNotFoundError(
+            f"No lines.csv in {d}. Run 'analysis video' on '{name}' first.")
+    return d
 
 
-def show_analysis(path, name, edit=True, deg=3, n_sigma=3.0, out_dir=None):
-    """Plot mean_spacing (+ std_spacing as error bars) vs time with a
-    robust polynomial fit, from a frames_summary.csv.
+def analyse_spacing(name, output_dir="output"):
+    """Plot the mean line spacing (error = std) against time.
 
-    edit=True  -> points rejected as outliers by the fit are removed before
-                  plotting.
-    edit=False -> all points are kept and outliers are only marked in red.
-    out_dir    -> where to save ``<name>.png`` (default: next to the CSV).
-
-    Returns a dict with the fit results (and the saved image path).
+    Reads <output_dir>/video/<name>/lines.csv and writes spacing.csv and
+    spacing.png next to it. Frames with fewer than 2 lines are skipped.
+    Returns a dict with the data and the written paths.
     """
-    import matplotlib  # optional dependency, only needed here
-    matplotlib.use("Agg")  # the plot is only saved to a file, so work headless
+    d = find_video_dir(name, output_dir)
+    rows = []
+    for r in read_lines_csv(d / "lines.csv"):
+        s = spacing_stats(r["lines"])
+        if s is not None:
+            rows.append((r["time"], r["frame"], s[2], s[0], s[1]))
+    if not rows:
+        raise ValueError("No frame has at least 2 lines; nothing to plot.")
+
+    t, frame, n, mean, std = (np.array(c) for c in zip(*rows))
+
+    csv_path = d / "spacing.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["time", "frame", "n_lines", "mean_spacing_px", "std_spacing_px"])
+        for row in rows:
+            w.writerow([row[0], row[1], row[2], round(row[3], 3),
+                        "" if np.isnan(row[4]) else round(row[4], 3)])
+
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    path = Path(path)
-    data = pd.read_csv(path)
-    # frames without >= 2 tracks have empty spacing values -> drop them
-    data = data.dropna(subset=["timestamp_sec", "mean_spacing", "std_spacing"])
-    time_s = data["timestamp_sec"].to_numpy(dtype=float)
-    spacing = data["mean_spacing"].to_numpy(dtype=float)
-    deltas = data["std_spacing"].to_numpy(dtype=float)
-    if len(time_s) < deg + 2:
-        raise ValueError(f"{name}: only {len(time_s)} usable frames, "
-                         f"need at least {deg + 2} for degree {deg}")
-
-    t0, ts = time_s.mean(), time_s.std()
-    if ts == 0:
-        raise ValueError(f"{name}: all timestamps are identical")
-    z = (time_s - t0) / ts
-    coef, inlier = robust_polyfit(z, spacing, deg, n_sigma)
-
-    resid = spacing - np.polyval(coef, z)
-    var = spacing[inlier].var()
-    r2 = 1 - resid[inlier].var() / var if var > 0 else float("nan")
-    rmse = resid[inlier].std()
-    n_out = int(np.sum(~inlier))
-    print(f"{name}: degree={deg} R2={r2:.3f} RMSE={rmse:.2f}px "
-          f"outliers={n_out}/{len(inlier)}")
-
-    if edit:  # drop the outliers
-        time_s, spacing, deltas = time_s[inlier], spacing[inlier], deltas[inlier]
-        inlier = np.ones(len(time_s), dtype=bool)
-
-    t_fine = np.linspace(time_s.min(), time_s.max(), 400)
-    fit_curve = np.polyval(coef, (t_fine - t0) / ts)
-
-    fig, ax = plt.subplots()
-    ax.errorbar(time_s[inlier], spacing[inlier], yerr=deltas[inlier], fmt="o",
-                capsize=4, label="Spacing of the lines with the error")
-    if not inlier.all():
-        ax.errorbar(time_s[~inlier], spacing[~inlier], yerr=deltas[~inlier],
-                    fmt="o", capsize=4, color="red", alpha=0.6,
-                    label="Outliers (excluded from fit)")
-    ax.plot(t_fine, fit_curve, "k", lw=2,
-            label=f"Robust polynomial fit (deg {deg}, R²={r2:.2f})")
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.errorbar(t, mean, yerr=np.nan_to_num(std), fmt="o-", capsize=4,
+                label="mean spacing, error = std of the spacings")
     ax.set_xlabel("time (s)")
-    ax.set_ylabel("spacing (px)")
-    ax.set_title(name)
+    ax.set_ylabel("distance between lines (px)")
+    ax.set_title(d.name)
+    ax.grid(alpha=0.3)
     ax.legend()
-    ax.grid()
-
-    out_dir = Path(out_dir) if out_dir else path.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_png = out_dir / f"{name}.png"
-    fig.savefig(out_png)
+    fig.tight_layout()
+    png_path = d / "spacing.png"
+    fig.savefig(png_path)
     plt.close(fig)
-    return {"name": name, "degree": deg, "r2": float(r2), "rmse": float(rmse),
-            "outliers": n_out, "points": int(len(inlier)), "image": str(out_png)}
+
+    return {"directory": str(d), "frames": len(rows), "time": t.tolist(),
+            "mean_spacing": mean.tolist(), "std_spacing": std.tolist(),
+            "csv_path": str(csv_path), "plot_path": str(png_path)}

@@ -3,7 +3,7 @@
 Needs the `measurement_control` package and a connected DC2200.
 Currents are in AMPERES - check your LED head's rating before running.
 
-Run:  python 07_dc2200_ramp.py
+Run:  python 05_dc2200_ramp.py
 """
 from types import SimpleNamespace
 
