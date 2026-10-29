@@ -45,6 +45,9 @@ htmlcov/
 .idea/
 .DS_Store
 
+# Input data
+input/
+
 # Videos and analysis results
 *.MP4
 *.mp4
