@@ -1,7 +1,9 @@
 import time
+import pandas as pd
 
 from .common import DC2200_PRODUCT_ID, DC2200_RESOURCE, close_quietly
 from .usb_driver import ThorlabsUSBDriver
+from pathlib import Path
 
 # Currents are in AMPERES (the DC2200 accepts up to 2 A; check your LED head's rating).
 MAX_CURRENT_A = 2.0
@@ -13,17 +15,22 @@ def ramp_current(dc2200, start, stop, duration, update_rate, include_start=True)
     include_start=False skips the first point (use it for the second half of a
     cycle so the turning point is not set twice).
     """
+    data = []
     n_steps = max(2, int(duration * update_rate))
     start_time = time.monotonic()
 
     for i in range(0 if include_start else 1, n_steps + 1):
         fraction = i / n_steps
-        dc2200.configure_constant_current(start + fraction * (stop - start))
-
+        current_A = start + fraction * (stop - start)
+        current_t = time.monotonic() - start_time
+        dc2200.configure_constant_current(current_A)
+        data.append((round(current_t, 4), current_A))
         # Keep timing based on a clock, not accumulated sleep time
-        remaining = start_time + fraction * duration - time.monotonic()
+        remaining = fraction * duration - current_t
         if remaining > 0:
             time.sleep(remaining)
+    
+    return data
 
 
 def _read_cfg(cfg):
@@ -60,6 +67,7 @@ def main_ramp(cfg):
     """
     p = _read_cfg(cfg)
     USBCommunicator, DC2200 = _import_dc2200()
+    output_data = [] 
 
     with ThorlabsUSBDriver(product_id=DC2200_PRODUCT_ID):
         print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
@@ -72,15 +80,17 @@ def main_ramp(cfg):
                 dc2200.switch_on()
 
                 for _ in range(p["cycles"]):
-                    ramp_current(dc2200, p["i_min"], p["i_max"],
+                    up_data=ramp_current(dc2200, p["i_min"], p["i_max"],
                                  p["ramp_duration"], p["update_rate"])
-                    ramp_current(dc2200, p["i_max"], p["i_min"],
+                    down_data=ramp_current(dc2200, p["i_max"], p["i_min"],
                                  p["ramp_duration"], p["update_rate"],
                                  include_start=False)
+                    output_data.append(up_data.append(down_data))
             finally:
                 dc2200.switch_off()
         finally:
             close_quietly(communicator)
+    return output_data
 
 
 def _read_set_cfg(cfg):

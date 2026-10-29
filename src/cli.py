@@ -1,7 +1,7 @@
 """Command line interface.
 
-    strip-line-finder control  {ramp, pm, set, liv}      instrument control
-    strip-line-finder analysis {image, video, analyse}   line detection
+    measurement control  {ramp, pm, set, liv}      instrument control
+    measurement analysis {image, video, analyse}   line detection
 """
 import argparse
 import sys
@@ -45,7 +45,7 @@ def config_from_args(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="strip-line-finder", description="Strip Line Finder CLI")
+        prog="measurement", description="Pitch Measurement CLI")
     groups = parser.add_subparsers(dest="group", required=True)
 
     # ======================================================================
@@ -67,13 +67,13 @@ def build_parser():
     ramp.add_argument("--cycles", type=int, default=1, help="Number of up/down cycles.")
 
     pm = ctl.add_parser("pm", help="Detect light power with the PM40 power meter.")
-    pm.add_argument("--wavelength", type=float, default=None,
-                    help="Set the detection wavelength in nm (default: 633.0).")
-    pm.add_argument("--averaging-count", type=int, default=None,
+    pm.add_argument("--wavelength", type=float, default=450.0,
+                    help="Set the detection wavelength in nm (default: 450.0).")
+    pm.add_argument("--averaging-count", type=int, default=10,
                     help="Number of samples to average (default: 10).")
-    pm.add_argument("--sample-duration", type=float, default=None,
+    pm.add_argument("--sample-duration", type=float, default=5.0,
                     help="Total measurement duration in seconds (default: 5.0).")
-    pm.add_argument("--sample-rate", type=float, default=None,
+    pm.add_argument("--sample-rate", type=float, default=10.0,
                     help="Sampling frequency in Hz (default: 10.0).")
 
     st = ctl.add_parser(
@@ -88,7 +88,7 @@ def build_parser():
     liv.add_argument("--ramp-duration", type=float, default=10.0)
     liv.add_argument("--update-rate", type=float, default=10.0)
     liv.add_argument("--cycles", type=int, default=1)
-    liv.add_argument("--wavelength", type=float, default=633.0)
+    liv.add_argument("--wavelength", type=float, default=450.0)
     liv.add_argument("--averaging-count", type=int, default=10)
     liv.add_argument("--settle-time", type=float, default=None,
                      help="seconds to wait after each current step (default: automatic)")
@@ -134,10 +134,18 @@ def build_parser():
 
 def run_control(args):
     if args.command == "ramp":
-        main_ramp(SimpleNamespace(i_min=args.i_min, i_max=args.i_max,
+        input_amps = main_ramp(SimpleNamespace(i_min=args.i_min, i_max=args.i_max,
                                   ramp_duration=args.ramp_duration,
                                   update_rate=args.update_rate, cycles=args.cycles))
-        print("Ramp completed.")
+        output = "output/ramp/current_input.csv"
+        path = Path(output)
+        RAMP_CSV_HEADER = ["time_s", "current_A"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(RAMP_CSV_HEADER)
+            w.writerows(input_amps)
+        print(f"Ramp completed. Current data stored at {output}")
     elif args.command == "pm":
         main_power_measurement(SimpleNamespace(
             wavelength=args.wavelength, averaging_count=args.averaging_count,

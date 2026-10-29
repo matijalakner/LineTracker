@@ -21,7 +21,7 @@ def _read_cfg(cfg):
         "ramp_duration": 10.0,
         "update_rate": 10.0,
         "cycles": 1,
-        "wavelength": 633.0,
+        "wavelength": 450.0,
         "averaging_count": 10,
         "settle_time": None,   # s to wait after setting the current; None = auto
         "output_csv": None,    # path; None = do not write a file
