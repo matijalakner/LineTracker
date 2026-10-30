@@ -48,19 +48,19 @@ from line_finder import analyse_image, process_video, analyse_spacing
 
 ```bash
 # 1. one image
-strip-line-finder analysis image sample.jpg
+measurement analysis image sample.jpg
 
 # 2. a video: one frame every 5 seconds, lines found in every frame
-strip-line-finder analysis video footage.mp4 -n 5
+measurement analysis video footage.mp4 -n 5
 
 # 3. mean line spacing (± std) against time
-strip-line-finder analysis analyse footage
+measurement analysis analyse footage
 
 # light source: constant current of 0.25 A, left on
-strip-line-finder control set 0.25
+measurement control set 0.25
 
 # light source: 0 -> 0.5 A in steps of 0.05 A, every step held for 2 s, and back
-strip-line-finder control ramp --min 0 --max 0.5 --step 0.05 --step-time 2
+measurement control ramp --min 0 --max 0.5 --step 0.05 --step-time 2
 ```
 
 ---
@@ -137,10 +137,10 @@ Currents are in **amperes**. Check your LED head's rating before running anythin
 | `control liv` | Ramps the current and logs power together. Options: `--i-min --i-max --ramp-duration --update-rate --cycles`, `--wavelength` (default 450 nm), `--averaging-count`, `--settle-time`. |
 
 ```bash
-strip-line-finder control set 0.25
-strip-line-finder control ramp --min 0.0 --max 0.5 --step 0.05 --step-time 2
-strip-line-finder control pm --wavelength 450 --sample-duration 5 --sample-rate 10
-strip-line-finder control liv --i-max 0.05 --ramp-duration 10 --output-csv liv_run1.csv
+measurement control set 0.25
+measurement control ramp --min 0.0 --max 0.5 --step 0.05 --step-time 2
+measurement control pm --wavelength 450 --sample-duration 5 --sample-rate 10
+measurement control liv --i-max 0.05 --ramp-duration 10 --output-csv liv_run1.csv
 ```
 
 ### How `ramp` steps

@@ -54,7 +54,7 @@ def config_from_args(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="strip-line-finder", description="Strip Line Finder CLI")
+        prog="measurement", description="Pitch Measurement CLI")
     groups = parser.add_subparsers(dest="group", required=True)
 
     # ======================================================================
