@@ -1,7 +1,7 @@
 """Command line interface.
 
-    strip-line-finder control  {ramp, pm, set, liv}      instrument control (data -> output/<ramp|pm|liv>/)
-    strip-line-finder analysis {image, video, analyse}   line detection
+    measurement control  {ramp, pm, set, liv}      instrument control (data -> output/<ramp|pm|liv>/)
+    measurement analysis {image, video, analyse}   line detection
 """
 import argparse
 import sys
@@ -54,7 +54,7 @@ def config_from_args(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="strip-line-finder", description="Strip Line Finder CLI")
+        prog="measurement", description="Strip Line Finder CLI")
     groups = parser.add_subparsers(dest="group", required=True)
 
     # ======================================================================
