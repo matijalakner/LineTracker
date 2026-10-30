@@ -27,13 +27,28 @@ measurement control   set | ramp | pm | liv        drive the instruments
 
 Requires Python 3.8 or newer.
 
+Installation method only for use:
 ```bash
-git clone https://github.com/your-username/strip-line-finder.git
+git clone https://github.com/matijalakner/strip-line-finder.git
 cd strip-line-finder
-pip install -e .              # numpy, pillow, opencv-python, matplotlib
-pip install -e ".[hardware]"  # adds pyusb, only needed for `control`
+sudo dnf install pipx
+pipx install -e .              # numpy, pillow, opencv-python, matplotlib
+pipx inject strip-line-finder pyusb  # adds pyusb, only needed for `control`
+measurement --help
 ```
 
+Installation method for further work:
+```bash
+#!/usr/bin/env bash
+# Usage:  source setup.sh      (creates the environment, installs, and activates it)
+#         PYTHON=python3.12 source setup.sh   (use a specific Python)
+cd "$(dirname "${BASH_SOURCE[0]}")" || return 1
+${PYTHON:-python3} -m venv measure \
+  && source measure/bin/activate \
+  && pip install --upgrade pip \
+  && pip install -e ".[hardware]" \
+  && echo "Ready: the 'measurement' command is available in this terminal."
+```
 The `control` commands also need the separate `measurement_control` package (DC2200 driver). It is not installed automatically. Everything under `analysis` works without it, and the package imports fine either way; a clear error appears only when you start a measurement.
 
 `src/` is installed as the package `line_finder`:
