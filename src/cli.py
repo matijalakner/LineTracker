@@ -1,11 +1,10 @@
 """Command line interface.
 
-    measurement control  {ramp, pm, set, liv}      instrument control
-    measurement analysis {image, video, analyse}   line detection
+    strip-line-finder control  {ramp, pm, set, liv}      instrument control (data -> output/<ramp|pm|liv>/)
+    strip-line-finder analysis {image, video, analyse}   line detection
 """
 import argparse
 import sys
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +15,7 @@ from .strip_line_finder.video import process_video
 from .ThorLabs.DC2200 import main_ramp, main_set_current
 from .ThorLabs.PM400 import main_power_measurement
 from .ThorLabs.PM400_DC2200 import main_liv_measurement
+from .utils import output_csv_path
 
 DETECTION_OPTIONS = [
     ("n_blocks", int, "horizontal bands that must agree (default 8)"),
@@ -38,16 +38,13 @@ def add_detection_options(parser):
                            default=None, help=text)
 
 
-def _create_dirs():
-    OUT_DIRS = [
-        "output/image",
-        "output/video",
-        "output/ramp",
-        "output/liv"
-    ]
-    for path in OUT_DIRS:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+def add_output_options(parser, kind):
+    parser.add_argument("--output-dir", default="output",
+                        help=f"root output folder; data goes to <output-dir>/{kind}/ "
+                             "(default: output)")
+    parser.add_argument("--output-csv", default=None,
+                        help=f"CSV file name (default: {kind}_<UTC time>.csv). A plain name "
+                             f"is saved in <output-dir>/{kind}/.")
 
 
 def config_from_args(args):
@@ -57,7 +54,7 @@ def config_from_args(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="measurement", description="Pitch Measurement CLI")
+        prog="strip-line-finder", description="Strip Line Finder CLI")
     groups = parser.add_subparsers(dest="group", required=True)
 
     # ======================================================================
@@ -67,16 +64,19 @@ def build_parser():
     ctl = control.add_subparsers(dest="command", required=True)
 
     ramp = ctl.add_parser(
-        "ramp", help="Ramp the DC2200 LED current up and down (currents in amperes).")
-    ramp.add_argument("--i-min", type=float, default=0.0,
-                      help="Current to start from, in A (default: 0.0).")
-    ramp.add_argument("--i-max", type=float, default=0.8,
-                      help="Current to ramp up to, in A (default: 0.8).")
-    ramp.add_argument("--ramp-duration", type=float, default=300.0,
-                      help="Duration of each up or down ramp, in seconds.")
-    ramp.add_argument("--update-rate", "--update-ramp", dest="update_rate",
-                      type=float, default=20.0, help="Current updates per second.")
-    ramp.add_argument("--cycles", type=int, default=1, help="Number of up/down cycles.")
+        "ramp", help="Step the DC2200 LED current from min to max and back; every step "
+                     "is held for step-time seconds (currents in amperes).")
+    ramp.add_argument("--min", dest="i_min", type=float, required=True,
+                      help="Current to start from, in A.")
+    ramp.add_argument("--max", dest="i_max", type=float, required=True,
+                      help="Current to step up to, in A (at most 2 A).")
+    ramp.add_argument("--step", type=float, required=True,
+                      help="Current increase per step, in A.")
+    ramp.add_argument("--step-time", type=float, required=True,
+                      help="How long every step is held, in seconds.")
+    ramp.add_argument("--cycles", type=int, default=1,
+                      help="Number of min -> max -> min cycles (default: 1).")
+    add_output_options(ramp, "ramp")
 
     pm = ctl.add_parser("pm", help="Detect light power with the PM40 power meter.")
     pm.add_argument("--wavelength", type=float, default=450.0,
@@ -87,6 +87,7 @@ def build_parser():
                     help="Total measurement duration in seconds (default: 5.0).")
     pm.add_argument("--sample-rate", type=float, default=10.0,
                     help="Sampling frequency in Hz (default: 10.0).")
+    add_output_options(pm, "pm")
 
     st = ctl.add_parser(
         "set", help="Set the DC2200 light output to a constant current and leave it on "
@@ -104,8 +105,7 @@ def build_parser():
     liv.add_argument("--averaging-count", type=int, default=10)
     liv.add_argument("--settle-time", type=float, default=None,
                      help="seconds to wait after each current step (default: automatic)")
-    liv.add_argument("--output-csv", default=None,
-                     help="CSV file for the data (default: liv_<timestamp>.csv)")
+    add_output_options(liv, "liv")
 
     # ======================================================================
     # analysis
@@ -146,32 +146,25 @@ def build_parser():
 
 def run_control(args):
     if args.command == "ramp":
-        input_amps = main_ramp(SimpleNamespace(i_min=args.i_min, i_max=args.i_max,
-                                  ramp_duration=args.ramp_duration,
-                                  update_rate=args.update_rate, cycles=args.cycles))
-        output = "output/ramp"
-        name = Path("current_input.csv").stem
-        path = Path(output) / name
-        RAMP_CSV_HEADER = ["time_s", "current_A"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(RAMP_CSV_HEADER)
-            w.writerows(input_amps)
-        print(f"Ramp completed. Current data stored at {output}")
+        main_ramp(SimpleNamespace(
+            i_min=args.i_min, i_max=args.i_max, step=args.step,
+            step_time=args.step_time, cycles=args.cycles,
+            output_csv=output_csv_path(args.output_dir, "ramp", args.output_csv)))
+        print("Ramp completed.")
     elif args.command == "pm":
         main_power_measurement(SimpleNamespace(
             wavelength=args.wavelength, averaging_count=args.averaging_count,
-            sample_duration=args.sample_duration, sample_rate=args.sample_rate))
+            sample_duration=args.sample_duration, sample_rate=args.sample_rate,
+            output_csv=output_csv_path(args.output_dir, "pm", args.output_csv)))
     elif args.command == "set":
         main_set_current(SimpleNamespace(current=args.current))
     elif args.command == "liv":
-        out_csv = args.output_csv or f"{datetime.now():%Y%m%d_%H%M%S}.csv"
         main_liv_measurement(SimpleNamespace(
             i_min=args.i_min, i_max=args.i_max, ramp_duration=args.ramp_duration,
             update_rate=args.update_rate, cycles=args.cycles,
             wavelength=args.wavelength, averaging_count=args.averaging_count,
-            settle_time=args.settle_time, output_csv=out_csv))
+            settle_time=args.settle_time,
+            output_csv=output_csv_path(args.output_dir, "liv", args.output_csv)))
 
 
 def run_analysis(args):
@@ -196,7 +189,6 @@ def run_analysis(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    _create_dirs()
     try:
         if args.group == "control":
             run_control(args)

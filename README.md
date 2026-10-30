@@ -1,11 +1,25 @@
 # Line Finder
 
-A Python library and command-line tool that finds thin vertical lines in images and video, tracks their spacing over time, and drives Thorlabs lab hardware: a DC2200 LED driver (current ramps, constant current), a PM40 power meter (power logging), and both together for LIV measurements.
+Find thin vertical lines in images and video, measure how their spacing changes over time, and control the Thorlabs lab hardware used in the same experiment (DC2200 LED driver and PM400 power meter).
 
-The command line has two parts:
+```text
+strip-line-finder analysis  image | video | analyse     find lines, measure spacing
+strip-line-finder control   set | ramp | pm | liv        drive the instruments
+```
 
-- **`control`** - the instruments: `ramp`, `pm`, `set`, `liv`
-- **`analysis`** - the images: `image`, `video`, `analyse`
+## Contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Analysis](#analysis)
+- [Control](#control)
+- [Where the data goes](#where-the-data-goes)
+- [How the detection works](#how-the-detection-works)
+- [Detection parameters](#detection-parameters)
+- [Python API](#python-api)
+- [Project structure](#project-structure)
+- [Examples](#examples)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -16,80 +30,178 @@ Requires Python 3.8 or newer.
 ```bash
 git clone https://github.com/your-username/strip-line-finder.git
 cd strip-line-finder
-pip install -e .              # core: numpy, pillow, opencv-python, matplotlib
-pip install -e ".[hardware]"  # adds pyusb for the Thorlabs instruments
+pip install -e .              # numpy, pillow, opencv-python, matplotlib
+pip install -e ".[hardware]"  # adds pyusb, only needed for `control`
 ```
 
-The `control` commands additionally need the `measurement_control` package, which is not installed automatically. Image and video analysis work without `pyusb` and without `measurement_control`; the package imports fine either way, and a clear error is raised only when you start a measurement.
+The `control` commands also need the separate `measurement_control` package (DC2200 driver). It is not installed automatically. Everything under `analysis` works without it, and the package imports fine either way; a clear error appears only when you start a measurement.
 
-`src/` is installed as the package **`line_finder`**, with the subpackages `strip_line_finder` (detection) and `ThorLabs` (instruments):
+`src/` is installed as the package `line_finder`:
 
 ```python
-from line_finder import analyse_image, process_video, analyse_spacing, main_set_current
+from line_finder import analyse_image, process_video, analyse_spacing
 ```
 
 ---
 
-## How the line detection works
-
-1. The image is cut into 8 horizontal bands. Each band is reduced to one colour profile along x by taking the **median** over its rows, which ignores dust and local defects.
-2. Per colour channel, a moving-median background is subtracted at 1-px resolution, and the largest deviation over R, G and B is the line strength of that column. Wide colour stripes stay in the background; only narrow features remain.
-3. The band-averaged signal is smoothed and searched for local maxima above `max(k * sigma, rel * strong-response level)`, at least `min_dist` px apart.
-4. A candidate is accepted only if it is visible in at least `min_fraction` of the bands. A bubble that covers only part of the image height is rejected, while faint lines survive.
-
-Size-dependent parameters scale with the image width (tuned for a 6000 px wide frame), so downscaled frames work with the defaults.
-
----
-
-## Command line
+## Quick start
 
 ```bash
-# analysis
+# 1. one image
 strip-line-finder analysis image sample.jpg
+
+# 2. a video: one frame every 5 seconds, lines found in every frame
 strip-line-finder analysis video footage.mp4 -n 5
+
+# 3. mean line spacing (± std) against time
 strip-line-finder analysis analyse footage
 
-# control
+# light source: constant current of 0.25 A, left on
 strip-line-finder control set 0.25
-strip-line-finder control ramp --i-min 0.0 --i-max 0.5 --ramp-duration 60 --update-rate 20 --cycles 1
-strip-line-finder control pm --wavelength 633 --sample-duration 5 --sample-rate 10
-strip-line-finder control liv --i-max 0.05 --ramp-duration 10 --output-csv liv_run1.csv
+
+# light source: 0 -> 0.5 A in steps of 0.05 A, every step held for 2 s, and back
+strip-line-finder control ramp --min 0 --max 0.5 --step 0.05 --step-time 2
 ```
 
-### `analysis`
+---
 
-All analysis commands take `--output-dir` (default `output`).
+## Analysis
 
-| Command | What it does |
-|---|---|
-| `image IMAGE` | Detects the lines and writes `output/image/<name>/<name>_marked.png` (same size, lines painted red) and `<name>_lines.csv` (`line, x_px, spacing_px`). `--plot` also saves the line-strength plot. |
-| `video VIDEO -n N` | Takes a frame every `N` seconds (default 1), saves them to `output/video/frames/<name>/`, analyses each one like an image, and writes the marked frames and `lines.csv` to `output/video/<name>/`. |
-| `analyse NAME` | Reads `output/video/<name>/lines.csv` and plots the mean distance between neighbouring lines against time, with the std of the spacings as the error. Writes `spacing.png` and `spacing.csv` into the same folder. Frames with fewer than 2 lines are skipped. |
+Every analysis command takes `--output-dir` (default `output`).
 
-`lines.csv` has one row per analysed frame:
+### `analysis image IMAGE`
+
+Detects the vertical lines in one image.
+
+```text
+output/image/<name>/
+├── <name>_marked.png     the image, same size, lines painted red
+├── <name>_lines.csv      line, x_px, spacing_px
+└── <name>_signal.png     line-strength plot (only with --plot)
+```
+
+### `analysis video VIDEO -n N`
+
+Takes a frame every `N` seconds (default 1, first frame at t = 0), then analyses each frame exactly like an image.
+
+```text
+output/video/
+├── frames/<name>/        raw frames:  frame_00000.png, frame_00050.png, ...
+└── <name>/
+    ├── frame_00000_marked.png ...     every frame with its lines marked
+    └── lines.csv                      time_stamp line, then time, frame, lines
+```
+
+`lines.csv` starts with a line `time_stamp,<UTC time when the analysis started>`, then the column header, then one row per analysed frame:
 
 | Column | Meaning |
 |---|---|
-| `time` | Time of the frame in the video, in seconds |
+| `time` | Time of the frame in the video (s) |
 | `frame` | Frame index in the video |
-| `lines` | Array of the x positions of the lines, e.g. `[121.0, 259.0, 395.0]` |
+| `lines` | Array of the x positions of the detected lines (px) |
 
-`image` and `video` accept the detection options below as `--k 4`, `--min-fraction 0.5`, and so on.
+```csv
+time_stamp,2026-10-30T12:34:56.789Z
+time,frame,lines
+0.0,0,"[62.0, 129.0, 198.0, 264.0, 333.0, 409.0, ...]"
+5.0,50,"[63.0, 133.0, 203.0, 271.0, 341.0, 418.0, ...]"
+```
 
-### `control`
+Files without the time stamp line (older runs) are still read correctly.
 
-Currents are in **amperes**. Check your LED head's rating first.
+### `analysis analyse NAME`
+
+`NAME` is the video name (the folder under `output/video/`). It reads `lines.csv`, computes for every frame the mean distance between neighbouring lines and the standard deviation of those distances, and plots the mean against time with the std as the error bar.
+
+```text
+output/video/<name>/
+├── spacing.png    mean spacing vs time, error bars = std
+└── spacing.csv    time, frame, n_lines, mean_spacing_px, std_spacing_px
+```
+
+- Frames with fewer than 2 lines are skipped.
+- The std is the sample standard deviation (n − 1) of the individual spacings; with only one spacing in a frame it is undefined and no error bar is drawn.
+- The std describes how evenly the lines are spaced inside a frame, not the measurement noise. Unevenly spaced stripes give large error bars even if the detection is perfect.
+
+---
+
+## Control
+
+Currents are in **amperes**. Check your LED head's rating before running anything.
 
 | Command | What it does |
 |---|---|
-| `set CURRENT` | Sets the DC2200 to a constant current (0 - 2 A) and **leaves the light on**. The user current limit is set to the same value. `set 0` switches the output off. |
-| `ramp` | Ramps the DC2200 current up and down (`--i-min --i-max --ramp-duration --update-rate --cycles`). The output is switched off at the end or on any error, including Ctrl+C. |
-| `pm` | Logs optical power with the PM40 (`--wavelength --averaging-count --sample-duration --sample-rate`). |
-| `liv` | Ramps the current and logs power together, saved to CSV (`--output-csv`, `--settle-time`, plus the ramp and `pm` options). |
+| `control set CURRENT` | Sets the DC2200 to a constant current (0 – 2 A) and **leaves the light on**. The user current limit is set to the same value. `set 0` switches the output off. |
+| `control ramp` | Steps the current from `--min` to `--max` and back, in steps of `--step` A, holding every step for `--step-time` s. All four are required. Optional: `--cycles` (default 1). The output is switched off at the end or on any error, including Ctrl+C. |
+| `control pm` | Logs optical power with the PM400. Options: `--wavelength` (default 450 nm), `--averaging-count`, `--sample-duration`, `--sample-rate`. |
+| `control liv` | Ramps the current and logs power together. Options: `--i-min --i-max --ramp-duration --update-rate --cycles`, `--wavelength` (default 450 nm), `--averaging-count`, `--settle-time`. |
+
+```bash
+strip-line-finder control set 0.25
+strip-line-finder control ramp --min 0.0 --max 0.5 --step 0.05 --step-time 2
+strip-line-finder control pm --wavelength 450 --sample-duration 5 --sample-rate 10
+strip-line-finder control liv --i-max 0.05 --ramp-duration 10 --output-csv liv_run1.csv
+```
+
+### How `ramp` steps
+
+With `--min 0 --max 0.5 --step 0.1 --step-time 2` the current goes 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1, 0 A and every value is held for 2 s (22 s in total). The maximum is not repeated, and the last value is held for the full step time before the output is switched off. If `max − min` is not a multiple of `step`, the last step up is shorter so that the ramp always ends exactly on `--max`. The steps are timed from a clock, so they do not drift. `--max` may not exceed 2 A, and the user current limit of the device is set to `--max` for the run.
+
+### Setup
+
+1. Edit the instrument serial numbers in `src/ThorLabs/common.py`. USB product IDs and resource strings are defined there once, so they cannot disagree.
+2. The modules detach the Linux kernel driver while they run and re-attach it afterwards. This needs `pyusb` and usually elevated USB permissions (a udev rule for vendor `1313`, or `sudo`).
+
+---
+
+## Where the data goes
+
+`--output-dir` (default `output`) is the root for everything.
+
+| Command | Folder | File |
+|---|---|---|
+| `control ramp` | `output/ramp/` | `ramp_<UTC time>.csv` |
+| `control pm` | `output/pm/` | `pm_<UTC time>.csv` |
+| `control liv` | `output/liv/` | `liv_<UTC time>.csv` |
+| `analysis image` | `output/image/<name>/` | marked image, `<name>_lines.csv` |
+| `analysis video` | `output/video/` | `frames/<name>/`, and `<name>/` with the marked frames and `lines.csv` |
+
+`--output-csv NAME` (ramp, pm, liv) changes the file name. A plain name is saved in the folder of its command (`--output-csv run1.csv` gives `output/ramp/run1.csv`); a name that contains a folder is used as given. The CSV is written even if a run is interrupted, so partial data is kept. Folders are created as needed.
+
+**Time stamp line.** The first line of the ramp, pm and video CSVs is `time_stamp,<UTC time>`; the column header is on line 2. For `ramp` it is the UTC time just before the first step, for `pm` the start of the logging, for the video the start of the analysis.
+
+```csv
+time_stamp,2026-10-30T12:34:56.789Z
+time_s,cycle,direction,current_A
+0.0,1,up,0.0
+2.0003,1,up,0.1
+```
+
+| File | Columns (after the time stamp line) |
+|---|---|
+| ramp | `time_s, cycle, direction, current_A` |
+| pm | `time_s, power_W` |
+| liv | `time_s, cycle, direction, current_A, power_W` (no time stamp line) |
+| video `lines.csv` | `time, frame, lines` |
+
+`time_s` is the time since the start of the run. `settle_time` of `liv` must be shorter than `1 / update_rate`.
+
+---
+
+## How the detection works
+
+1. **Bands.** The image is cut into 8 horizontal bands. Each band is reduced to one colour profile along x by taking the median over its rows, which ignores dust and local defects.
+2. **Line strength.** For each colour channel a moving-median background is subtracted at 1-px resolution, and the largest deviation over R, G and B is the line strength of that column. Wide colour stripes stay in the background; only narrow features remain.
+3. **Candidates.** The band-averaged signal is smoothed and searched for local maxima above `max(k · sigma, rel · strong-response level)`, at least `min_dist` px apart (the strongest wins).
+4. **Confirmation.** A candidate is accepted only if it is also visible in at least `min_fraction` of the bands. A defect that covers only part of the image height is rejected, while faint lines survive.
+
+Size-dependent parameters scale with the image width (tuned on a 6000 px wide frame), so downscaled frames work with the defaults.
 
 ---
 
 ## Detection parameters
+
+Set them in Python with `DetectionConfig(...)` or on the command line (`analysis image` and `analysis video`) as `--k 4`, `--min-fraction 0.5`, and so on.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -104,31 +216,35 @@ Currents are in **amperes**. Check your LED head's rating first.
 | `smooth` | 5 | Smoothing width in px that merges split peaks |
 | `half_width` | 1 | Painted half-width of a line in px |
 
-Python: `DetectionConfig(k=4.0, min_fraction=0.5)`. Command line: `--k 4 --min-fraction 0.5`.
-
 ---
 
-## Hardware
+## Python API
 
-Before running anything, edit the instrument serial numbers in `src/ThorLabs/common.py`. USB product IDs and the resource strings are defined there once, so they cannot disagree.
+```python
+from line_finder import DetectionConfig, analyse_image, process_video, analyse_spacing
 
-All hardware modules detach the Linux kernel driver for the instrument while they run (via `ThorlabsUSBDriver`) and re-attach it afterwards. This needs `pyusb` and usually elevated USB permissions (a udev rule or `sudo`).
+config = DetectionConfig(k=4.0)
+
+# one image -> dict with 'lines' (x positions), 'marked_path', 'csv_path', ...
+res = analyse_image("sample.jpg", "output/image/sample", config, plot=True)
+
+# video -> list of {'time', 'frame', 'lines'}; writes the folders described above
+rows = process_video("footage.mp4", output_dir="output", interval=5.0, config=config)
+
+# spacing vs time -> dict with the data and the paths of spacing.png / spacing.csv
+out = analyse_spacing("footage", output_dir="output")
+```
 
 ```python
 from types import SimpleNamespace
-from line_finder import main_set_current, main_ramp, main_power_measurement, main_liv_measurement
+from line_finder import main_ramp
 
-main_set_current(SimpleNamespace(current=0.25))        # light stays on
-main_ramp(SimpleNamespace(i_min=0.0, i_max=0.5, ramp_duration=60.0,
-                          update_rate=20.0, cycles=1))
-readings = main_power_measurement(SimpleNamespace(
-    wavelength=633.0, averaging_count=10, sample_duration=5.0, sample_rate=10.0))
-rows = main_liv_measurement(SimpleNamespace(
-    i_min=0.0, i_max=0.05, ramp_duration=10.0, update_rate=10.0, cycles=1,
-    wavelength=633.0, averaging_count=10, settle_time=None, output_csv="liv_run1.csv"))
+rows = main_ramp(SimpleNamespace(i_min=0.0, i_max=0.5, step=0.05, step_time=2.0,
+                                 output_csv="output/ramp/run1.csv"))
+# rows: (time_s, cycle, direction, current_A); the CSV starts with the UTC time stamp line
 ```
 
-The LIV rows and CSV have the columns `time_s, cycle, direction, current_A, power_W`. The CSV is written even if the run is interrupted. `settle_time` must be shorter than `1 / update_rate`.
+Lower-level pieces: `detect_lines(img, config)` returns `(positions, signal, threshold)` for a NumPy image; `mark_image`, `plot_line_signal`, `split_video`, `read_lines_csv`, `read_time_stamp`, `spacing_stats` and `ramp_levels` are also exported. Hardware: `main_set_current`, `main_ramp`, `main_power_measurement` and `main_liv_measurement` (all take an object or dict with the settings; `output_csv` is optional).
 
 ---
 
@@ -138,21 +254,22 @@ The LIV rows and CSV have the columns `time_s, cycle, direction, current_A, powe
 strip-line-finder/
 ├── pyproject.toml
 ├── README.md
-├── examples/                         runnable scripts (see below)
+├── examples/                         runnable scripts
 └── src/                              installed as `line_finder`
     ├── __init__.py                   public exports
     ├── cli.py                        `control` and `analysis` commands
+    ├── utils.py                      UTC time stamps, CSV writing, output paths
     ├── ThorLabs/
     │   ├── common.py                 USB IDs, resource strings, timing helpers
-    │   ├── usb_driver.py             kernel-driver detach context manager (pyusb)
-    │   ├── DC2200.py                 current ramp and constant current (set)
+    │   ├── usb_driver.py             kernel-driver detach (pyusb)
+    │   ├── DC2200.py                 stepped current ramp and constant current
     │   ├── PM400.py                  power logging
-    │   └── PM400_DC2200.py           combined LIV measurement with CSV output
+    │   └── PM400_DC2200.py           combined LIV measurement
     └── strip_line_finder/
         ├── detect.py                 DetectionConfig and the line detector
         ├── image.py                  analyse_image: detect, mark, save
         ├── video.py                  split_video, process_video
-        └── analysis.py               spacing statistics and the spacing-vs-time plot
+        └── analysis.py               spacing statistics and the spacing plot
 ```
 
 ## Examples
@@ -163,19 +280,26 @@ strip-line-finder/
 | `02_split_video.py` | Take a frame every N seconds |
 | `03_video_analysis.py` | Full video pipeline |
 | `04_plot_spacing.py` | Mean spacing vs time with std error bars |
-| `05_dc2200_ramp.py` | DC2200 current ramp (needs hardware) |
+| `05_dc2200_ramp.py` | DC2200 stepped current ramp (needs hardware) |
 | `06_dc2200_set.py` | Set the DC2200 current (needs hardware) |
+
+---
 
 ## Troubleshooting
 
-- **Too many lines found:** raise `--k` or `--rel`.
-- **Faint lines missed:** lower `--k` or `--rel`, or lower `--min-fraction` if a defect hides a line in some bands.
-- **Two lines merged or one split:** adjust `--min-dist` (it should be well below the line spacing).
-- **`No lines.csv in output/video/<name>`:** run `analysis video` first, and check that `--output-dir` matches.
-- **`pyusb is required` error:** `pip install -e ".[hardware]"`.
-- **`measurement_control` error on `control` commands:** install that package and connect the instrument over USB.
-- **`Thorlabs USB device ... not found`:** check the cable and that the serial number and product ID in `src/ThorLabs/common.py` match your instrument (`lsusb`).
-- **USB permission denied on Linux:** add a udev rule for vendor `1313`, or run with `sudo`.
+| Problem | Fix |
+|---|---|
+| Too many lines | Raise `--k` or `--rel` |
+| Faint lines missed | Lower `--k` or `--rel`; lower `--min-fraction` if a defect hides a line in some bands |
+| One line split in two, or two merged | Adjust `--min-dist`; it should be well below the line spacing |
+| A spacing point jumps in the plot | A line was probably missed in that frame; check its `*_marked.png` |
+| `No lines.csv in output/video/<name>` | Run `analysis video` first and check that `--output-dir` matches |
+| `ramp` says `max must be <= 2.0 A` | The DC2200 limit is 2 A; lower `--max` |
+| `ramp` / `control` error `the following arguments are required` | `--min --max --step --step-time` must all be given |
+| `pyusb is required` | `pip install -e ".[hardware]"` |
+| `measurement_control` error | Install that package and connect the instrument over USB |
+| `Thorlabs USB device ... not found` | Check the cable and the serial number and product ID in `src/ThorLabs/common.py` (`lsusb`) |
+| USB permission denied (Linux) | Add a udev rule for vendor `1313`, or run with `sudo` |
 
 ## License
 

@@ -7,6 +7,7 @@ from PIL import Image
 
 from .detect import DetectionConfig, detect_lines, mark_image, plot_line_signal
 
+
 def analyse_image(image_path, out_dir, config=None, plot=False, write_csv=True):
     """Detect the vertical lines in one image file and save the results.
 

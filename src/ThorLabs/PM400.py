@@ -5,8 +5,11 @@ talked to here. The `PM400` class is also used by PM400_DC2200.py.
 """
 import time
 
+from ..utils import utc_timestamp, write_csv
 from .common import PM_PRODUCT_ID, PM_RESOURCE, close_quietly, sleep_until
 from .usb_driver import ThorlabsUSBDriver
+
+PM_CSV_HEADER = ["time_s", "power_W"]
 
 
 class PM400:
@@ -61,6 +64,7 @@ def _read_cfg(cfg):
         "averaging_count": 10,
         "sample_duration": 5.0,
         "sample_rate": 10.0,
+        "output_csv": None,    # path; None = do not write a file
     }
 
     p = {}
@@ -84,26 +88,35 @@ def _read_cfg(cfg):
 def main_power_measurement(cfg):
     """Power measurement loop for the Thorlabs PM400.
 
-    cfg needs: wavelength (nm), averaging_count, sample_duration (s), sample_rate (Hz).
-    Returns a list of (time_s, power_W).
+    cfg needs: wavelength (nm), averaging_count, sample_duration (s), sample_rate (Hz);
+    optional: output_csv (path).
+    Returns a list of (time_s, power_W). If output_csv is set the readings are
+    written there (also when interrupted); the first line of the file is
+    ``time_stamp,<UTC time at the start of the logging>``.
     """
     p = _read_cfg(cfg)
 
-    readings = []
-    with ThorlabsUSBDriver(product_id=PM_PRODUCT_ID):
-        with PM400() as meter:
-            print("Connected to:", meter.idn())
-            meter.set_wavelength(p["wavelength"])
-            meter.set_averaging(p["averaging_count"])
-            print(f"Starting power logging at {p['wavelength']} nm...")
+    readings, time_stamp = [], None
+    try:
+        with ThorlabsUSBDriver(product_id=PM_PRODUCT_ID):
+            with PM400() as meter:
+                print("Connected to:", meter.idn())
+                meter.set_wavelength(p["wavelength"])
+                meter.set_averaging(p["averaging_count"])
+                print(f"Starting power logging at {p['wavelength']} nm...")
 
-            total = max(1, int(round(p["sample_duration"] * p["sample_rate"])))
-            dt = 1.0 / p["sample_rate"]
-            t0 = time.monotonic()
-            for i in range(total):
-                sleep_until(t0 + i * dt)
-                power = meter.read_power()
-                readings.append((time.monotonic() - t0, power))
-                print(f"Sample {i + 1}/{total} - Power: {power * 1e3:.4f} mW")
+                total = max(1, int(round(p["sample_duration"] * p["sample_rate"])))
+                dt = 1.0 / p["sample_rate"]
+                time_stamp = utc_timestamp()
+                t0 = time.monotonic()
+                for i in range(total):
+                    sleep_until(t0 + i * dt)
+                    power = meter.read_power()
+                    readings.append((round(time.monotonic() - t0, 4), power))
+                    print(f"Sample {i + 1}/{total} - Power: {power * 1e3:.4f} mW")
+    finally:
+        if p["output_csv"] and readings:
+            write_csv(p["output_csv"], PM_CSV_HEADER, readings, time_stamp)
+            print(f"Data saved to {p['output_csv']}")
     print("Power measurement sequence completed.")
     return readings

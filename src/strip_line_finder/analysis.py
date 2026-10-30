@@ -7,10 +7,22 @@ import numpy as np
 
 
 def read_lines_csv(path):
-    """Rows of lines.csv as dicts: time (float), frame (int), lines (list)."""
+    """Rows of lines.csv as dicts: time (float), frame (int), lines (list).
+
+    The leading ``time_stamp,<UTC>`` line is skipped; files without it still work.
+    """
     with open(path, newline="", encoding="utf-8") as f:
+        if not f.readline().startswith("time_stamp"):
+            f.seek(0)
         return [{"time": float(r["time"]), "frame": int(r["frame"]),
                  "lines": json.loads(r["lines"])} for r in csv.DictReader(f)]
+
+
+def read_time_stamp(path):
+    """The UTC time stamp on the first line of a CSV from this package, or None."""
+    with open(path, newline="", encoding="utf-8") as f:
+        row = next(csv.reader(f), [])
+    return row[1] if len(row) > 1 and row[0] == "time_stamp" else None
 
 
 def spacing_stats(xs):

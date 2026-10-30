@@ -1,48 +1,72 @@
+import math
 import time
-import pandas as pd
 
-from .common import DC2200_PRODUCT_ID, DC2200_RESOURCE, close_quietly
+from ..utils import utc_timestamp, write_csv
+from .common import DC2200_PRODUCT_ID, DC2200_RESOURCE, close_quietly, sleep_until
 from .usb_driver import ThorlabsUSBDriver
-from pathlib import Path
 
 # Currents are in AMPERES (the DC2200 accepts up to 2 A; check your LED head's rating).
 MAX_CURRENT_A = 2.0
+MAX_STEPS = 100_000
+RAMP_CSV_HEADER = ["time_s", "cycle", "direction", "current_A"]
 
 
-def ramp_current(dc2200, start, stop, duration, update_rate, include_start=True):
-    """Linearly ramp current (A) from start to stop over `duration` seconds.
+def ramp_levels(i_min, i_max, step):
+    """Currents (A) of one upward ramp: i_min, i_min + step, ... , i_max.
 
-    include_start=False skips the first point (use it for the second half of a
-    cycle so the turning point is not set twice).
+    The last level is always exactly i_max; if (i_max - i_min) is not a
+    multiple of step, the last step is simply shorter.
     """
-    data = []
-    n_steps = max(2, int(duration * update_rate))
-    start_time = time.monotonic()
+    if step <= 0:
+        raise ValueError("step must be > 0 A")
+    if i_max < i_min:
+        raise ValueError("max must be >= min")
+    n = int(math.floor((i_max - i_min) / step + 1e-9))
+    if n + 1 > MAX_STEPS:
+        raise ValueError(f"too many steps ({n + 1}); use a larger step")
+    levels = [round(min(i_min + i * step, i_max), 9) for i in range(n + 1)]
+    if levels[-1] < i_max - 1e-9:
+        levels.append(round(i_max, 9))
+    return levels
 
-    for i in range(0 if include_start else 1, n_steps + 1):
-        fraction = i / n_steps
-        current_A = start + fraction * (stop - start)
-        current_t = time.monotonic() - start_time
-        dc2200.configure_constant_current(current_A)
-        data.append((round(current_t, 4), current_A))
-        # Keep timing based on a clock, not accumulated sleep time
-        remaining = fraction * duration - current_t
-        if remaining > 0:
-            time.sleep(remaining)
-    
-    return data
+
+def ramp_sequence(levels, cycles=1):
+    """Ordered (cycle, direction, current) list: up to the maximum, then back down.
+
+    The maximum is not repeated. Cycle 2 and later skip their first up level,
+    because the previous cycle already ended on it.
+    """
+    seq = []
+    for cycle in range(1, cycles + 1):
+        up = levels if cycle == 1 else levels[1:]
+        seq += [(cycle, "up", i) for i in up]
+        seq += [(cycle, "down", i) for i in levels[-2::-1]]
+    return seq
 
 
 def _read_cfg(cfg):
     """Accepts a dict or an object (e.g. SimpleNamespace) with the ramp settings."""
-    get = cfg.get if isinstance(cfg, dict) else (lambda k: getattr(cfg, k))
-    p = {k: get(k) for k in ("i_min", "i_max", "ramp_duration", "update_rate", "cycles")}
-    if p["i_min"] < 0 or p["i_max"] < 0:
-        raise ValueError("currents must be >= 0 A")
+    get = cfg.get if isinstance(cfg, dict) else (lambda k: getattr(cfg, k, None))
+
+    def value(key, default=None):
+        v = get(key)
+        if v is None:
+            if default is None:
+                raise ValueError(f"ramp setting '{key}' is missing")
+            return default
+        return v
+
+    p = {"i_min": float(value("i_min")), "i_max": float(value("i_max")),
+         "step": float(value("step")), "step_time": float(value("step_time")),
+         "cycles": int(value("cycles", 1)), "output_csv": get("output_csv")}
+    if p["i_min"] < 0:
+        raise ValueError("min must be >= 0 A")
     if p["i_max"] < p["i_min"]:
-        raise ValueError("i_max must be >= i_min")
-    if p["ramp_duration"] <= 0 or p["update_rate"] <= 0:
-        raise ValueError("ramp_duration and update_rate must be > 0")
+        raise ValueError("max must be >= min")
+    if p["i_max"] > MAX_CURRENT_A:
+        raise ValueError(f"max must be <= {MAX_CURRENT_A} A")
+    if p["step"] <= 0 or p["step_time"] <= 0:
+        raise ValueError("step and step_time must be > 0")
     if p["cycles"] < 1:
         raise ValueError("cycles must be >= 1")
     return p
@@ -61,36 +85,52 @@ def _import_dc2200():
 
 
 def main_ramp(cfg):
-    """Ramp function control for the ThorLabs DC2200.
+    """Stepped current ramp for the ThorLabs DC2200: min -> max -> min.
 
-    cfg needs: i_min, i_max (A), ramp_duration (s), update_rate (Hz), cycles.
+    cfg needs: i_min, i_max (A), step (A), step_time (s, how long every step is
+    held); optional: cycles (default 1), output_csv (path).
+
+    Returns the list of rows (time_s, cycle, direction, current_A). If output_csv
+    is set the rows are written there, also when the run is interrupted. The
+    first line of that file is ``time_stamp,<UTC time at the start of the ramp>``.
+    The LED is switched off at the end and on any error, including Ctrl+C.
     """
     p = _read_cfg(cfg)
+    sequence = ramp_sequence(ramp_levels(p["i_min"], p["i_max"], p["step"]), p["cycles"])
     USBCommunicator, DC2200 = _import_dc2200()
-    output_data = [] 
 
-    with ThorlabsUSBDriver(product_id=DC2200_PRODUCT_ID):
-        print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
-        communicator = USBCommunicator(DC2200_RESOURCE)
-        try:
-            dc2200 = DC2200(communicator)
+    rows, time_stamp = [], None
+    try:
+        with ThorlabsUSBDriver(product_id=DC2200_PRODUCT_ID):
+            print("Kernel USB driver detached. Connecting to DC2200 via PyVISA...")
+            communicator = USBCommunicator(DC2200_RESOURCE)
             try:
-                dc2200.set_user_current_limit(p["i_max"])
-                dc2200.configure_constant_current(p["i_min"])
-                dc2200.switch_on()
+                dc2200 = DC2200(communicator)
+                try:
+                    dc2200.set_user_current_limit(p["i_max"])
+                    dc2200.configure_constant_current(p["i_min"])
+                    dc2200.switch_on()
+                    print(f"{len(sequence)} steps x {p['step_time']:g} s = "
+                          f"{len(sequence) * p['step_time']:g} s")
 
-                for _ in range(p["cycles"]):
-                    up_data=ramp_current(dc2200, p["i_min"], p["i_max"],
-                                 p["ramp_duration"], p["update_rate"])
-                    down_data=ramp_current(dc2200, p["i_max"], p["i_min"],
-                                 p["ramp_duration"], p["update_rate"],
-                                 include_start=False)
-                    output_data.append(up_data.append(down_data))
+                    time_stamp = utc_timestamp()
+                    t0 = time.monotonic()
+                    for k, (cycle, direction, current) in enumerate(sequence):
+                        sleep_until(t0 + k * p["step_time"])    # clock-based, no drift
+                        dc2200.configure_constant_current(current)
+                        rows.append((round(time.monotonic() - t0, 4), cycle, direction, current))
+                        print(f"[{k + 1}/{len(sequence)}] cycle {cycle} {direction}: "
+                              f"{current * 1e3:.2f} mA")
+                    sleep_until(t0 + len(sequence) * p["step_time"])   # hold the last step
+                finally:
+                    dc2200.switch_off()
             finally:
-                dc2200.switch_off()
-        finally:
-            close_quietly(communicator)
-    return output_data
+                close_quietly(communicator)
+    finally:
+        if p["output_csv"] and rows:
+            write_csv(p["output_csv"], RAMP_CSV_HEADER, rows, time_stamp)
+            print(f"Data saved to {p['output_csv']}")
+    return rows
 
 
 def _read_set_cfg(cfg):

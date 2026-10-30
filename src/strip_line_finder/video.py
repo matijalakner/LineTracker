@@ -1,11 +1,11 @@
 """Video analysis: take a frame every N seconds and analyse each like an image."""
-import csv
 import json
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from ..utils import utc_timestamp, write_csv
 from .detect import DetectionConfig
 from .image import analyse_image
 
@@ -61,10 +61,12 @@ def process_video(video_path, output_dir="output", interval=1.0, config=None,
         <output_dir>/video/<name>/frame_XXXXX_marked.png          marked frames
         <output_dir>/video/<name>/lines.csv                       time, frame, lines
 
-    ``lines`` holds the x positions of that frame's lines as a JSON array.
+    ``lines`` holds the x positions of that frame's lines as a JSON array. The
+    first line of lines.csv is ``time_stamp,<UTC time when the analysis started>``.
     Returns a list of dicts with time, frame and lines.
     """
     config = config or DetectionConfig()
+    time_stamp = utc_timestamp()
     video_path = Path(video_path)
     name = video_path.stem
     root = Path(output_dir) / "video"
@@ -88,12 +90,9 @@ def process_video(video_path, output_dir="output", interval=1.0, config=None,
             print(f"  [{n}/{len(frames)}] t = {t:.2f} s, frame {idx}: "
                   f"{len(res['lines'])} lines")
 
-    csv_path = out_dir / "lines.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["time", "frame", "lines"])
-        for r in rows:
-            w.writerow([r["time"], r["frame"], json.dumps(r["lines"])])
+    csv_path = write_csv(out_dir / "lines.csv", ["time", "frame", "lines"],
+                         [(r["time"], r["frame"], json.dumps(r["lines"])) for r in rows],
+                         time_stamp)
     if verbose:
         print(f"Data: {csv_path}")
     return rows
