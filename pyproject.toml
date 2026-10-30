@@ -21,7 +21,7 @@ dependencies = [
 hardware = ["pyusb>=1.2"]
 
 [project.scripts]
-measurement = "line_finder.cli:main"
+strip-line-finder = "line_finder.cli:main"
 
 # src/ itself is the package (it has __init__.py and cli.py with relative imports),
 # installed as `line_finder`, with the two subpackages below it.
