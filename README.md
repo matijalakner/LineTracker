@@ -29,7 +29,7 @@ Requires Python 3.8 or newer.
 
 ```bash
 git clone https://github.com/your-username/strip-line-finder.git
-cd strip-line-finder
+cd measurement
 pip install -e .              # numpy, pillow, opencv-python, matplotlib
 pip install -e ".[hardware]"  # adds pyusb, only needed for `control`
 ```
