@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 from .strip_line_finder.analysis import analyse_spacing
 from .strip_line_finder.detect import DetectionConfig
+from .strip_line_finder.folder import main_folder
 from .strip_line_finder.image import analyse_image
 from .strip_line_finder.video import process_video
-from .strip_line_finder.folder import main_folder
 from .ThorLabs.DC2200 import main_ramp, main_set_current
 from .ThorLabs.PM400 import main_power_measurement
 from .ThorLabs.PM400_DC2200 import main_liv_measurement
@@ -29,6 +29,7 @@ DETECTION_OPTIONS = [
     ("band_rel", float, "per-band visibility as a fraction of the threshold (default 0.5)"),
     ("smooth", int, "smoothing width in px (default 5)"),
     ("half_width", int, "painted half-width of a line in px (default 1)"),
+    ("min_threshold", float, "absolute floor of the threshold, 0-255 levels (default 2; lower it for dark images)"),
 ]
 
 
@@ -197,16 +198,17 @@ def run_analysis(args):
         name = Path(args.video).stem
         print(f"Analysed {len(rows)} frames. Results are in "
               f"'{Path(args.output_dir) / 'video' / name}/'.")
+    elif args.command == "folder":
+        rows = main_folder(args.path, args.output_dir, window=args.window,
+                           interactive=not args.yes, show=not args.no_show)
+        if rows:
+            print(f"Analysed {len(rows)} photos. Results are in "
+                  f"'{Path(args.output_dir) / 'folder' / Path(args.path).name}/'.")
     elif args.command == "analyse":
         res = analyse_spacing(args.name, args.output_dir)
         print(f"{res['frames']} frames used. Plot: {res['plot_path']}  "
               f"Data: {res['csv_path']}")
-    elif args.command == "folder":
-    rows = main_folder(args.path, args.output_dir, window=args.window,
-                        interactive=not args.yes, show=not args.no_show)
-    if rows:
-        print(f"Analysed {len(rows)} photos. Results are in "
-                f"'{Path(args.output_dir) / 'folder' / Path(args.path).name}/'.")
+
 
 def main(argv=None):
     args = build_parser().parse_args(argv)

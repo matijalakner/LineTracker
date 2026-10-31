@@ -1,3 +1,4 @@
+import dataclasses
 """Automatic choice of the detection settings from one image.
 
 There is no reference answer to compare with, so the tuner looks for settings
@@ -77,7 +78,7 @@ def _median_tilt(sig, xs, threshold, wide):
     return float(np.median(tilts)) if tilts else 0.0
 
 
-def tune_candidates(img, base=None, n_best=6, n_thresholds=80,
+def _candidates_for_strip(img, base=None, n_best=6, n_thresholds=80,
                     bg_scales=(0.5, 1.0, 2.0), min_lines=2, min_ratio=1.15, keep=0.5):
     """Ranked detection settings for an image, best first.
 
@@ -151,6 +152,31 @@ def tune_candidates(img, base=None, n_best=6, n_thresholds=80,
     head, tail = out[0], out[1:]
     tail.sort(key=lambda c: (abs(c["n_lines"] - head["n_lines"]), -c["plateau_ratio"]))
     return ([head] + tail)[:n_best]
+
+
+STRIP_HEIGHTS = (200, 400, 100, 50, None)   # tried after base.strip_height; None = full height
+
+
+def tune_candidates(img, base=None, strips=None, per_strip=3, n_best=8, **kwargs):
+    """Candidate settings over several strip heights (best first).
+
+    The tuner is run once per strip height. The base strip height (200 px by
+    default) comes first with all its candidates; the other heights add their
+    best few candidates after it, so answering "n" walks through them. Strip
+    heights that give the same lines as an earlier candidate are skipped.
+    """
+    base = base or DetectionConfig()
+    order = [base.strip_height] + [s for s in (strips or STRIP_HEIGHTS) if s != base.strip_height]
+    out = []
+    for i, sh in enumerate(order):
+        cands = _candidates_for_strip(img, dataclasses.replace(base, strip_height=sh), **kwargs)
+        cands = cands if i == 0 else [c for c in cands if c["status"] == "ok"][:per_strip]
+        for c in cands:
+            tol = 0.5 * (c["config"].min_dist or 100)
+            if not any(_same_lines(c["lines"], o["lines"], tol) for o in out):
+                c["strip_height"] = sh
+                out.append(c)
+    return out[:n_best] if out else _candidates_for_strip(img, base, **kwargs)
 
 
 def tune_parameters(tune_img, base=None):

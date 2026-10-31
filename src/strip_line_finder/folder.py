@@ -16,7 +16,20 @@ from .detect import DetectionConfig, check_config
 from .image import analyse_image
 from .tune import tune_candidates
 
-def _get_sort_time(path):
+def _exif_time(path):
+    """Camera capture time (seconds since epoch, camera clock taken as the computer's local time) or None."""
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif()
+            raw = exif.get_ifd(0x8769).get(36867) or exif.get(306)   # DateTimeOriginal, else DateTime
+        if raw:
+            return datetime.strptime(str(raw).strip(), "%Y:%m:%d %H:%M:%S").astimezone().timestamp()
+    except Exception:
+        pass
+    return None
+
+
+def _file_time(path):
     stat = os.stat(path)
     if platform.system() == 'Windows':
         return stat.st_ctime
@@ -25,9 +38,17 @@ def _get_sort_time(path):
     except AttributeError:
         return stat.st_mtime
 
+
+def _get_sort_time(path):
+    """Capture time from EXIF when the photo has it, otherwise the file time."""
+    t = _exif_time(path)
+    return t if t is not None else _file_time(path)
+
+
 def photo_time_utc(path):
     t = datetime.fromtimestamp(_get_sort_time(path), timezone.utc)
     return t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
 
 def get_sorted_photos(
         path_to_folder: str|Path,
@@ -40,15 +61,16 @@ def get_sorted_photos(
     if not any(folder.iterdir()):
         raise ValueError(f"Folder is empty: {folder}")
     files = list(folder.iterdir())
-    files.sort(key=lambda p: _get_sort_time(p))
+    files.sort(key=lambda p: (_get_sort_time(p), p.name))
     photos = [file for file in files if file.suffix.lower() in allowed and file.is_file()]
     if len(photos) < 1:
         raise ValueError(f"No photos in folder: {folder}")
     return photos
 
-_FIELD_TYPES = {"n_blocks": int, "bg_window": int, "k": float, "rel": float,
+_FIELD_TYPES = {"strip_height": int, "n_blocks": int, "bg_window": int, "k": float, "rel": float,
                 "min_dist": int, "x_tol": int, "min_fraction": float,
-                "band_rel": float, "smooth": int, "half_width": int}
+                "band_rel": float, "smooth": int, "half_width": int,
+                "min_threshold": float}
 
 
 def apply_overrides(text, config):
@@ -83,7 +105,7 @@ def _show_image(path):
 
 
 def _describe(config):
-    shown = ("bg_window", "rel", "k", "min_dist", "x_tol")
+    shown = ("bg_window", "rel", "k", "min_dist", "x_tol", "min_threshold")
     return ", ".join(f"{n}={getattr(config, n):.3g}" if isinstance(getattr(config, n), float)
                      else f"{n}={getattr(config, n)}" for n in shown)
 

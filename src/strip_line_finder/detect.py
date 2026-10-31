@@ -42,6 +42,8 @@ class DetectionConfig:
     band_rel: float = 0.5                  # per-band visibility, as a fraction of the threshold
     smooth: int = 5                        # smoothing width (px) that merges split peaks
     half_width: int = 1                    # painted half-width of a line (px)
+    strip_height: Optional[int] = 200        # analyse only this many rows around the image middle (None = all rows)
+    min_threshold: float = MIN_THRESHOLD   # absolute floor of the threshold (0-255 levels); lower it for dark images
 
 
 def moving_median(signal, window):
@@ -90,6 +92,68 @@ def peaks_1d(sig, threshold, min_dist):
     return sorted(kept)
 
 
+def check_config(config):
+    if config.n_blocks < 1:
+        raise ValueError("n_blocks must be at least 1")
+    if not 0 < config.min_fraction <= 1:
+        raise ValueError("min_fraction must be in (0, 1]")
+
+
+def compute_signal(img, config):
+    """Smoothed line strength per band and column.
+
+    Returns (signal n_blocks x W, bg_window, min_dist, x_tol) with the size
+    parameters resolved to pixels.
+    """
+    img = np.asarray(img)
+    h = img.shape[0]
+    sh = config.strip_height
+    if sh is not None and sh < h:
+        sh = max(int(sh), config.n_blocks)       # at least one row per band
+        r0 = (h - sh) // 2
+        img = img[r0:r0 + sh]
+    width = img.shape[1]
+    bg_window, min_dist, x_tol = auto_sizes(width, config)
+    sig = line_signal(img, config.n_blocks, bg_window)
+    if config.smooth > 1:
+        kern = np.ones(config.smooth, np.float32) / config.smooth
+        sig = np.stack([np.convolve(r, kern, mode="same") for r in sig])
+    return sig, bg_window, min_dist, x_tol
+
+
+def threshold_from(sig, config):
+    """The detection threshold of a config for this signal."""
+    mean_sig = sig.mean(axis=0)
+    sigma = MAD_TO_SIGMA * float(np.median(mean_sig))
+    # Flat or dark regions pull the median to ~0, so the threshold is never
+    # allowed below a fraction of the strong responses.
+    return max(config.k * sigma,
+               config.rel * float(np.percentile(mean_sig, 99.5)),
+               config.min_threshold)
+
+
+def select_lines(sig, threshold, config, min_dist, x_tol, details=False):
+    """Accept the lines of a signal at a given threshold.
+
+    Candidates are local maxima of the band-averaged signal above ``threshold``
+    (at least ``min_dist`` apart); each must also be visible in enough bands.
+    Returns the sorted x positions, or with ``details=True`` a list of
+    (x, band_positions, seen_bands) per line, where band_positions are the
+    positions of the response in the bands that saw the line.
+    """
+    width = sig.shape[1]
+    need = max(1, int(np.ceil(config.min_fraction * config.n_blocks)))
+    found = []
+    for c in peaks_1d(sig.mean(axis=0), threshold, min_dist):
+        lo, hi = max(0, c - x_tol), min(width, c + x_tol + 1)
+        seg = sig[:, lo:hi]
+        seen = seg.max(axis=1) >= config.band_rel * threshold
+        if seen.sum() >= need:
+            pos = lo + seg[seen].argmax(axis=1)
+            found.append((float(np.median(pos)), pos, int(seen.sum())))
+    return found if details else [f[0] for f in found]
+
+
 def detect_lines(img, config=None):
     """Detect vertical lines. Returns (positions, signal, threshold).
 
@@ -98,35 +162,10 @@ def detect_lines(img, config=None):
     threshold: the detection threshold that was applied.
     """
     config = config or DetectionConfig()
-    if config.n_blocks < 1:
-        raise ValueError("n_blocks must be at least 1")
-    if not 0 < config.min_fraction <= 1:
-        raise ValueError("min_fraction must be in (0, 1]")
-
-    width = np.asarray(img).shape[1]
-    bg_window, min_dist, x_tol = auto_sizes(width, config)
-    sig = line_signal(img, config.n_blocks, bg_window)
-    if config.smooth > 1:
-        kern = np.ones(config.smooth, np.float32) / config.smooth
-        sig = np.stack([np.convolve(r, kern, mode="same") for r in sig])
-
-    mean_sig = sig.mean(axis=0)
-    sigma = MAD_TO_SIGMA * float(np.median(mean_sig))
-    # Flat or dark regions pull the median to ~0, so the threshold is never
-    # allowed below a fraction of the strong responses.
-    threshold = max(config.k * sigma,
-                    config.rel * float(np.percentile(mean_sig, 99.5)),
-                    MIN_THRESHOLD)
-
-    need = max(1, int(np.ceil(config.min_fraction * config.n_blocks)))
-    xs = []
-    for c in peaks_1d(mean_sig, threshold, min_dist):
-        lo, hi = max(0, c - x_tol), min(width, c + x_tol + 1)
-        seg = sig[:, lo:hi]
-        seen = seg.max(axis=1) >= config.band_rel * threshold
-        if seen.sum() >= need:
-            xs.append(float(np.median(lo + seg[seen].argmax(axis=1))))
-    return xs, sig, threshold
+    check_config(config)
+    sig, _, min_dist, x_tol = compute_signal(img, config)
+    threshold = threshold_from(sig, config)
+    return select_lines(sig, threshold, config, min_dist, x_tol), sig, threshold
 
 
 def mark_image(img, xs, half_width=1):
