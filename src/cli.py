@@ -12,6 +12,7 @@ from .strip_line_finder.analysis import analyse_spacing
 from .strip_line_finder.detect import DetectionConfig
 from .strip_line_finder.image import analyse_image
 from .strip_line_finder.video import process_video
+from .strip_line_finder.folder import main_folder
 from .ThorLabs.DC2200 import main_ramp, main_set_current
 from .ThorLabs.PM400 import main_power_measurement
 from .ThorLabs.PM400_DC2200 import main_liv_measurement
@@ -135,6 +136,21 @@ def build_parser():
     vid.add_argument("--quiet", action="store_true", help="do not print progress")
     add_detection_options(vid)
 
+    fol = ana.add_parser(
+        "folder", help="Analyse every photo of a folder. The first photo is tuned and "
+                       "shown, you confirm it with y (or answer n for other settings), "
+                       "then all photos are analysed. Results go to "
+                       "<output-dir>/folder/<name>/results.csv.")
+    fol.add_argument("path", help="folder with the photos")
+    fol.add_argument("--output-dir", default="output",
+                     help="root output folder (default: output)")
+    fol.add_argument("--yes", action="store_true",
+                     help="do not ask: use the first suggestion for the settings")
+    fol.add_argument("--no-show", action="store_true",
+                     help="do not open the marked photo in the image viewer")
+    fol.add_argument("--window", type=int, default=7,
+                     help="photos compared with each other for the warnings (default: 7)")
+
     an = ana.add_parser(
         "analyse", help="Plot the mean distance between the lines (error = std) "
                         "against time, from <output-dir>/video/<name>/lines.csv.")
@@ -185,7 +201,12 @@ def run_analysis(args):
         res = analyse_spacing(args.name, args.output_dir)
         print(f"{res['frames']} frames used. Plot: {res['plot_path']}  "
               f"Data: {res['csv_path']}")
-
+    elif args.command == "folder":
+    rows = main_folder(args.path, args.output_dir, window=args.window,
+                        interactive=not args.yes, show=not args.no_show)
+    if rows:
+        print(f"Analysed {len(rows)} photos. Results are in "
+                f"'{Path(args.output_dir) / 'folder' / Path(args.path).name}/'.")
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
