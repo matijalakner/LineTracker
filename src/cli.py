@@ -158,7 +158,7 @@ def build_parser():
         "report", help="Line the photo results of 'analysis folder' up with a DC2200 ramp "
                        "by time and plot average distance and pitch against current, "
                        "intensity and time. Output: <output-dir>/report/<name>/ "
-                       "(data.csv, plots.png).")
+                       "(data.csv, plots.png, timeline.png).")
     rep.add_argument("name", help="name of the photo folder analysed with 'analysis folder' "
                                   "(results are read from <output-dir>/folder/<name>/results.csv)")
     rep.add_argument("--ramp", default=None,
@@ -237,7 +237,7 @@ def run_analysis(args):
         print(f"Ramp: {res['ramp_path']}\nPhotos: {res['results_path']}")
         print(f"{res['photos']} photos were taken during the ramp, {res['plotted']} plotted "
               "(photos with a warning are left out).")
-        print(f"Data: {res['csv_path']}  Plot: {res['plot_path']}")
+        print(f"Data: {res['csv_path']}  Plots: {res['plot_path']}  {res['timeline_path']}")
     elif args.command == "analyse":
         res = analyse_spacing(args.name, args.output_dir)
         print(f"{res['frames']} frames used. Plot: {res['plot_path']}  "

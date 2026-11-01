@@ -169,8 +169,11 @@ Each photo gets the ramp current that was set when it was taken; only photos tak
 ```text
 output/report/<name>/
 ├── data.csv     time[s], current[A], mean_spacing_px, std_spacing_px, warning, n_lines
-└── plots.png    average distance [µm] and pitch [µm] vs current, intensity [W/µm²] and time
+├── plots.png    average distance [µm] and pitch [µm] vs current, intensity [W/µm²] and time
+└── timeline.png power (intensity) of the ramp and pitch of the photos on one time axis
 ```
+
+`timeline.png` shifts both series to the same beginning: the ramp starts at t = 0 with its first row and the photos at t = 0 with the first photo. The shorter of the two series is also stretched in time to the length of the longer one, so both span the whole axis (the axis is then not real seconds for the stretched series; the x label says so). It uses all photos, also those outside the ramp (only photos with a warning are left out). The power is the LED intensity from the ramp current, `current * COEFF[objective]`. In Python, `plot_timeline(..., stretch=False)` only shifts, and `same_start=False` keeps the real clock instead.
 
 The camera clock and the computer clock must agree: the EXIF time has no time zone and is taken as the computer's local time. If the plots look shifted against the ramp, use `--camera-offset`. The calibration constants are in `src/strip_line_finder/calibration.py`.
 

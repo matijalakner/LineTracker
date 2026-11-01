@@ -110,6 +110,77 @@ def plot_report(table, out_png, name="", objective="20x", theta="0.8wt", px_to_u
     return int(keep.sum())
 
 
+def plot_timeline(path_ramp, path_results, out_png, name="", objective="20x", theta="0.8wt",
+                  px_to_um=PX_TO_UM, camera_offset_s=0.0, same_start=True, stretch=True):
+    """Intensity of the ramp and pitch of the photos on one common time axis.
+
+    same_start=True (default): both series are shifted to start at t = 0, the ramp
+    at its first row and the photos at the first photo. With stretch=True (default)
+    the shorter series is also stretched in time to the length of the longer one,
+    so both span the whole axis (the time axis is then no longer real seconds for
+    the stretched series). same_start=False keeps the real clock: the axis runs
+    from the earlier of the two starts to the later of the two ends, t = 0 being
+    that earlier start. All photos are used, also those outside the ramp, except
+    the ones with a warning. Returns (start, end) as UTC timestamps of the axis.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if objective not in COEFF:
+        raise ValueError(f"unknown objective '{objective}'; choose from {sorted(COEFF)}")
+    if theta not in THETA:
+        raise ValueError(f"unknown sample '{theta}'; choose from {sorted(THETA)}")
+    t0_ramp, ramp = read_ramp(path_ramp)
+    photos = pd.read_csv(path_results)
+    photo_utc = pd.to_datetime(photos["time_stamp"], utc=True) \
+        + pd.to_timedelta(camera_offset_s, unit="s")
+
+    ramp_start, ramp_end = t0_ramp, t0_ramp + pd.to_timedelta(ramp["time_s"].max(), unit="s")
+    if same_start:
+        start, end = min(ramp_start, photo_utc.min()), None
+    else:
+        start, end = min(ramp_start, photo_utc.min()), max(ramp_end, photo_utc.max())
+
+    seconds = lambda t: (t - start).total_seconds() if isinstance(t, pd.Timestamp) \
+        else (t - start).dt.total_seconds().to_numpy()
+    t_ramp = ramp["time_s"].to_numpy() if same_start else seconds(t0_ramp) + ramp["time_s"].to_numpy()
+    intensity = ramp["current_A"].to_numpy() * COEFF[objective]                 # W/um^2
+
+    ok = (photos["warning"].fillna("") == "").to_numpy()
+    t_photo = seconds(photo_utc)[ok]
+    if same_start:
+        t_photo = t_photo - seconds(photo_utc).min()
+        end_s = max(t_ramp.max(), t_photo_all := seconds(photo_utc).max() - seconds(photo_utc).min())
+        if stretch:                                   # shorter series -> same length as the longer
+            if t_ramp.max() > 0:
+                t_ramp = t_ramp * (end_s / t_ramp.max())
+            if t_photo_all > 0:
+                t_photo = t_photo * (end_s / t_photo_all)
+    else:
+        end_s = seconds(end)
+    pitch = 2 * THETA[theta] * photos["mean_spacing_px"].to_numpy(dtype=float)[ok] * px_to_um
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+    ax1.step(t_ramp, intensity, where="post", color="tab:orange")
+    ax1.set_ylabel("power (intensity) [W/µm²]")
+    ax2.scatter(t_photo, pitch, s=10, color="tab:blue")
+    ax2.set_ylabel("pitch [µm]")
+    ax2.set_xlabel(("time since the start of each series [s]" + (" (shorter series stretched)" if stretch else ""))
+                   if same_start
+                   else f"time [s] since {start:%Y-%m-%d %H:%M:%S} UTC")
+    for ax in (ax1, ax2):
+        ax.grid(alpha=0.3)
+    ax1.set_xlim(0, end_s)
+    fig.suptitle(f"{name}: power and pitch against time ({objective}, {theta})")
+    fig.tight_layout()
+    out_png = Path(out_png)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    return start, end_s
+
+
 def find_ramp_csv(ramp=None, output_dir="output"):
     """The given ramp CSV, or the newest <output_dir>/ramp/ramp_*.csv."""
     if ramp:
@@ -140,7 +211,7 @@ def find_results_csv(results, output_dir="output"):
 
 def main_report(name, ramp=None, results=None, output_dir="output", objective="20x",
                 theta="0.8wt", px_to_um=PX_TO_UM, camera_offset_s=0.0):
-    """Align, save and plot. Writes <output_dir>/report/<name>/data.csv and plots.png.
+    """Align, save and plot. Writes <output_dir>/report/<name>/data.csv, plots.png and timeline.png.
 
     ``results`` defaults to ``name`` (the folder name used with 'analysis folder').
     Returns a dict with the table and the written paths.
@@ -157,6 +228,9 @@ def main_report(name, ramp=None, results=None, output_dir="output", objective="2
     table.to_csv(csv_path, index=False)
     png_path = out_dir / "plots.png"
     n_plotted = plot_report(table, png_path, name, objective, theta, px_to_um)
-    return {"table": table, "ramp_path": str(ramp_path), "results_path": str(results_path),
+    timeline_path = out_dir / "timeline.png"
+    plot_timeline(ramp_path, results_path, timeline_path, name, objective, theta, px_to_um,
+                  camera_offset_s)
+    return {"timeline_path": str(timeline_path), "table": table, "ramp_path": str(ramp_path), "results_path": str(results_path),
             "csv_path": str(csv_path), "plot_path": str(png_path),
             "photos": len(table), "plotted": n_plotted}
