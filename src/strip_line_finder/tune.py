@@ -157,16 +157,19 @@ def _candidates_for_strip(img, base=None, n_best=6, n_thresholds=80,
 STRIP_HEIGHTS = (200, 400, 100, 50, None)   # tried after base.strip_height; None = full height
 
 
-def tune_candidates(img, base=None, strips=None, per_strip=3, n_best=8, **kwargs):
+def tune_candidates(img, base=None, strips=None, per_strip=3, n_best=8, extended=True, **kwargs):
     """Candidate settings over several strip heights (best first).
 
     The tuner is run once per strip height. The base strip height (200 px by
     default) comes first with all its candidates; the other heights add their
     best few candidates after it, so answering "n" walks through them. Strip
     heights that give the same lines as an earlier candidate are skipped.
+    extended=False tunes only the base strip height (about 5x faster); the first
+    candidate is the same either way.
     """
     base = base or DetectionConfig()
-    order = [base.strip_height] + [s for s in (strips or STRIP_HEIGHTS) if s != base.strip_height]
+    order = [base.strip_height] + ([s for s in (strips or STRIP_HEIGHTS) if s != base.strip_height]
+                                   if extended else [])
     out = []
     for i, sh in enumerate(order):
         cands = _candidates_for_strip(img, dataclasses.replace(base, strip_height=sh), **kwargs)

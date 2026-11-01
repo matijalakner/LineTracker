@@ -1,4 +1,5 @@
 import dataclasses
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import platform
@@ -128,7 +129,8 @@ def choose_parameters(first_photo, out_dir, base=None, interactive=True,
     """
     first_photo, out_dir = Path(first_photo), Path(out_dir)
     img = np.asarray(Image.open(first_photo).convert("RGB"))
-    cands = tune_candidates(img, base)
+    cands = tune_candidates(img, base, extended=False)   # other strip heights only if asked for
+    extended = False
     if not interactive:
         return cands[0]["config"], cands[0]
 
@@ -161,6 +163,10 @@ def choose_parameters(first_photo, out_dir, base=None, interactive=True,
             print("Please answer y, n or q.")
 
         while True:
+            if index + 1 >= len(cands) and not extended:
+                print("  (trying other strip heights ...)")
+                cands = tune_candidates(img, base)
+                extended = True
             more = index + 1 < len(cands)
             text = ask(("Enter = next suggestion, or type " if more else "Type ")
                        + "settings (name=value ..., e.g. k=4 rel=0.2), q = quit: ").strip()
@@ -268,7 +274,7 @@ def main_folder(
     """
     path = Path(path)
     photos = get_sorted_photos(path)
-    out_dir = Path(output_dir) / "folder" / path.name
+    out_dir = Path(output_dir) / path.name
 
     try:
         chosen = choose_parameters(photos[0], out_dir, interactive=interactive,
@@ -285,23 +291,30 @@ def main_folder(
         json.dumps(dataclasses.asdict(config), indent=2), encoding="utf-8")
     print(f"\nAnalysing {len(photos)} photos with: {_describe(config)}")
 
+    def work(photo):
+        res = analyse_image(photo, out_dir, config, write_csv=False)
+        return res["lines"], spacing_stats(res["lines"])
+
+    # decoding, the median filters and the PNG encoder release the GIL, so threads help
+    workers = max(1, min(4, os.cpu_count() or 1, len(photos)))
     rows = []
-    for n, photo, in enumerate(photos, start=1):
-        warning = ""
-        mean = std = ""
-        n_lines = 0
-        try:
-            res = analyse_image(photo, out_dir, config, write_csv=False)
-            n_lines = len(res["lines"])
-            stats= spacing_stats(res["lines"])
-            if stats is None:
-                warning = "fewer than 2 lines"
-            else:
-                mean, std = round(stats[0], 3), ("" if np.isnan(stats[1]) else round(stats[1], 3))
-        except Exception as e:
-            warning = f"failed: {e}"
-        rows.append((photo_time_utc(photo), n, photo.name, mean, n_lines, std, warning))
-        print(f"[{n}/{len(photos)}] {photo.name}: {n_lines} lines {warning}")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(work, p) for p in photos]
+        for n, (photo, fut) in enumerate(zip(photos, futures), start=1):
+            warning = ""
+            mean = std = ""
+            n_lines = 0
+            try:
+                lines, stats = fut.result()
+                n_lines = len(lines)
+                if stats is None:
+                    warning = "fewer than 2 lines"
+                else:
+                    mean, std = round(stats[0], 3), ("" if np.isnan(stats[1]) else round(stats[1], 3))
+            except Exception as e:
+                warning = f"failed: {e}"
+            rows.append((photo_time_utc(photo), n, photo.name, mean, n_lines, std, warning))
+            print(f"[{n}/{len(photos)}] {photo.name}: {n_lines} lines {warning}")
 
     rows = flag_unusual(rows, window=window, z_max=z_max,
                         tuning_failed=tuning["status"] == "fallback")

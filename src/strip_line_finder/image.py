@@ -8,13 +8,16 @@ from PIL import Image
 from .detect import DetectionConfig, detect_lines, mark_image, plot_line_signal
 
 
-def analyse_image(image_path, out_dir, config=None, plot=False, write_csv=True):
+def analyse_image(image_path, out_dir, config=None, plot=False, write_csv=True,
+                  save_marked=True):
     """Detect the vertical lines in one image file and save the results.
 
     Writes into ``out_dir`` (created if needed):
         <name>_marked.png   the image (same size) with the lines painted red
         <name>_lines.csv    columns line, x_px, spacing_px   (write_csv=True)
         <name>_signal.png   line-strength plot                (plot=True)
+
+    save_marked=False skips the (slow) marked PNG.
 
     Returns a dict with the line positions and the written paths.
     """
@@ -24,15 +27,18 @@ def analyse_image(image_path, out_dir, config=None, plot=False, write_csv=True):
         raise FileNotFoundError(f"Image not found: {image_path}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    img = np.asarray(Image.open(image_path).convert("RGB"))
+    with Image.open(image_path) as pil:
+        img = np.asarray(pil.convert("RGB"))
     height, width = img.shape[:2]
     xs, sig, threshold = detect_lines(img, config)
 
     name = image_path.stem
     marked_path = out_dir / f"{name}_marked.png"
-    Image.fromarray(mark_image(img, xs, config.half_width)).save(marked_path)
     result = {"name": name, "width": width, "height": height, "lines": xs,
               "threshold": threshold, "marked_path": str(marked_path)}
+    if save_marked:
+        # compress_level=1: ~3x faster than the default 6 for a file only 5% bigger
+        Image.fromarray(mark_image(img, xs, config.half_width)).save(marked_path, compress_level=1)
 
     if write_csv:
         csv_path = out_dir / f"{name}_lines.csv"
