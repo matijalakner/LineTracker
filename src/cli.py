@@ -1,7 +1,7 @@
 """Command line interface.
 
     measurement control  {ramp, pm, set, liv}      instrument control (data -> output/<ramp|pm|liv>/)
-    measurement analysis {image, video, analyse}   line detection
+    measurement analysis {image, video, folder, report, analyse}   line detection
 """
 import argparse
 import sys
@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .strip_line_finder.analysis import analyse_spacing
+from .strip_line_finder.calibration import COEFF, PX_TO_UM, THETA
 from .strip_line_finder.detect import DetectionConfig
 from .strip_line_finder.folder import main_folder
 from .strip_line_finder.image import analyse_image
@@ -29,6 +30,7 @@ DETECTION_OPTIONS = [
     ("band_rel", float, "per-band visibility as a fraction of the threshold (default 0.5)"),
     ("smooth", int, "smoothing width in px (default 5)"),
     ("half_width", int, "painted half-width of a line in px (default 1)"),
+    ("strip_height", int, "analyse only this many rows around the image middle (default 200; 0 = all rows)"),
     ("min_threshold", float, "absolute floor of the threshold, 0-255 levels (default 2; lower it for dark images)"),
 ]
 
@@ -152,6 +154,28 @@ def build_parser():
     fol.add_argument("--window", type=int, default=7,
                      help="photos compared with each other for the warnings (default: 7)")
 
+    rep = ana.add_parser(
+        "report", help="Line the photo results of 'analysis folder' up with a DC2200 ramp "
+                       "by time and plot average distance and pitch against current, "
+                       "intensity and time. Output: <output-dir>/report/<name>/ "
+                       "(data.csv, plots.png).")
+    rep.add_argument("name", help="name of the photo folder analysed with 'analysis folder' "
+                                  "(results are read from <output-dir>/folder/<name>/results.csv)")
+    rep.add_argument("--ramp", default=None,
+                     help="ramp CSV (default: the newest <output-dir>/ramp/ramp_*.csv)")
+    rep.add_argument("--results", default=None,
+                     help="results CSV to use instead of the one found from the name")
+    rep.add_argument("--objective", choices=sorted(COEFF), default="20x",
+                     help="objective, sets the intensity per ampere (default: 20x)")
+    rep.add_argument("--sample", choices=sorted(THETA), default="0.8wt",
+                     help="sample concentration, sets the angle for the pitch (default: 0.8wt)")
+    rep.add_argument("--px-um", type=float, default=PX_TO_UM,
+                     help=f"micrometers per pixel (default: {PX_TO_UM})")
+    rep.add_argument("--camera-offset", type=float, default=0.0,
+                     help="seconds added to the photo times if the camera clock is off (default: 0)")
+    rep.add_argument("--output-dir", default="output",
+                     help="root output folder (default: output)")
+
     an = ana.add_parser(
         "analyse", help="Plot the mean distance between the lines (error = std) "
                         "against time, from <output-dir>/video/<name>/lines.csv.")
@@ -204,6 +228,16 @@ def run_analysis(args):
         if rows:
             print(f"Analysed {len(rows)} photos. Results are in "
                   f"'{Path(args.output_dir) / 'folder' / Path(args.path).name}/'.")
+    elif args.command == "report":
+        from .strip_line_finder.report import main_report      # pandas is only needed here
+        res = main_report(args.name, ramp=args.ramp, results=args.results,
+                          output_dir=args.output_dir, objective=args.objective,
+                          theta=args.sample, px_to_um=args.px_um,
+                          camera_offset_s=args.camera_offset)
+        print(f"Ramp: {res['ramp_path']}\nPhotos: {res['results_path']}")
+        print(f"{res['photos']} photos were taken during the ramp, {res['plotted']} plotted "
+              "(photos with a warning are left out).")
+        print(f"Data: {res['csv_path']}  Plot: {res['plot_path']}")
     elif args.command == "analyse":
         res = analyse_spacing(args.name, args.output_dir)
         print(f"{res['frames']} frames used. Plot: {res['plot_path']}  "

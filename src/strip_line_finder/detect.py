@@ -42,7 +42,7 @@ class DetectionConfig:
     band_rel: float = 0.5                  # per-band visibility, as a fraction of the threshold
     smooth: int = 5                        # smoothing width (px) that merges split peaks
     half_width: int = 1                    # painted half-width of a line (px)
-    strip_height: Optional[int] = 200        # analyse only this many rows around the image middle (None = all rows)
+    strip_height: Optional[int] = 200        # analyse only this many rows around the image middle (None or 0 = all rows)
     min_threshold: float = MIN_THRESHOLD   # absolute floor of the threshold (0-255 levels); lower it for dark images
 
 
@@ -108,7 +108,7 @@ def compute_signal(img, config):
     img = np.asarray(img)
     h = img.shape[0]
     sh = config.strip_height
-    if sh is not None and sh < h:
+    if sh and sh < h:                            # None or 0 = all rows
         sh = max(int(sh), config.n_blocks)       # at least one row per band
         r0 = (h - sh) // 2
         img = img[r0:r0 + sh]

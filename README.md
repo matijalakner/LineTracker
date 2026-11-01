@@ -3,7 +3,7 @@
 Find thin vertical lines in images and video, measure how their spacing changes over time, and control the Thorlabs lab hardware used in the same experiment (DC2200 LED driver and PM400 power meter).
 
 ```text
-measurement analysis  image | video | analyse     find lines, measure spacing
+measurement analysis  image | video | folder | report | analyse   find lines, measure spacing
 measurement control   set | ramp | pm | liv        drive the instruments
 ```
 
@@ -25,14 +25,14 @@ measurement control   set | ramp | pm | liv        drive the instruments
 
 ## Installation
 
-Requires Python 3.8 or newer.
+Requires Python 3.10 or newer.
 
 Installation method only for use:
 ```bash
 git clone https://github.com/matijalakner/strip-line-finder.git
 cd strip-line-finder
 sudo dnf install pipx
-pipx install -e .              # numpy, pillow, opencv-python, matplotlib
+pipx install -e .              # numpy, pillow, opencv-python, matplotlib, pandas
 pipx inject strip-line-finder pyusb  # adds pyusb, only needed for `control`
 measurement --help
 ```
@@ -124,6 +124,56 @@ time,frame,lines
 
 Files without the time stamp line (older runs) are still read correctly.
 
+### `analysis folder PATH`
+
+Analyses every photo of a folder, for example photos taken during a ramp. The photos are ordered by their camera capture time (EXIF); photos without EXIF use the file time.
+
+1. The first photo is used to tune the detection settings. The tuner first tries a 200 px strip around the image middle and shows the marked photo.
+2. You answer `y` to keep the settings, or `n` to see the next suggestion (other strip heights are tried only then). Instead of Enter you can type settings, for example `strip_height=400 k=4`.
+3. Every photo is analysed with the confirmed settings.
+
+`--yes` skips the question, `--no-show` does not open the image viewer, `--window N` sets how many neighbouring photos are compared for the warnings.
+
+```text
+output/folder/<folder name>/
+├── results.csv         time_stamp, photo, file, mean_spacing_px, n_lines, std_spacing_px, warning
+├── parameters.json     the confirmed detection settings
+├── tuning/             every tuning attempt: try<N>_<photo>_marked.png
+└── <photo>_marked.png  every photo with its lines marked
+```
+
+`warning` is filled when a photo differs from its neighbours: fewer than 2 lines, a different number of lines, or an unusual std of the spacings.
+
+### `analysis report NAME`
+
+Lines the photo results of `analysis folder` up with a DC2200 ramp by time and plots average distance and pitch against current, intensity and time.
+
+```bash
+measurement control ramp --min 0.05 --max 1 --step 0.05 --step-time 100
+measurement analysis folder photos/mysample
+measurement analysis report mysample            # newest ramp in output/ramp/
+measurement analysis report mysample --ramp ramp_20261030T171836Z.csv --objective 20x --sample 0.8wt
+```
+
+Each photo gets the ramp current that was set when it was taken; only photos taken during the ramp are kept. Photos with a warning are saved in the table but left out of the plots.
+
+| Option | Meaning |
+|---|---|
+| `--ramp` | Ramp CSV (default: the newest `output/ramp/ramp_*.csv`) |
+| `--results` | A results CSV instead of the one found from `NAME` |
+| `--objective` | `5x`, `10x`, `20x`, `40x`: intensity per ampere (default 20x) |
+| `--sample` | `0.2wt` ... `1.5wt`: angle for the pitch (default 0.8wt) |
+| `--px-um` | Micrometers per pixel (default 0.1813) |
+| `--camera-offset` | Seconds added to the photo times if the camera clock is off |
+
+```text
+output/report/<name>/
+├── data.csv     time[s], current[A], mean_spacing_px, std_spacing_px, warning, n_lines
+└── plots.png    average distance [µm] and pitch [µm] vs current, intensity [W/µm²] and time
+```
+
+The camera clock and the computer clock must agree: the EXIF time has no time zone and is taken as the computer's local time. If the plots look shifted against the ramp, use `--camera-offset`. The calibration constants are in `src/strip_line_finder/calibration.py`.
+
 ### `analysis analyse NAME`
 
 `NAME` is the video name (the folder under `output/video/`). It reads `lines.csv`, computes for every frame the mean distance between neighbouring lines and the standard deviation of those distances, and plots the mean against time with the std as the error bar.
@@ -180,6 +230,8 @@ With `--min 0 --max 0.5 --step 0.1 --step-time 2` the current goes 0, 0.1, 0.2, 
 | `control liv` | `output/liv/` | `liv_<UTC time>.csv` |
 | `analysis image` | `output/image/<name>/` | marked image, `<name>_lines.csv` |
 | `analysis video` | `output/video/` | `frames/<name>/`, and `<name>/` with the marked frames and `lines.csv` |
+| `analysis folder` | `output/folder/<name>/` | `results.csv`, `parameters.json`, marked photos, `tuning/` |
+| `analysis report` | `output/report/<name>/` | `data.csv`, `plots.png` |
 
 `--output-csv NAME` (ramp, pm, liv) changes the file name. A plain name is saved in the folder of its command (`--output-csv run1.csv` gives `output/ramp/run1.csv`); a name that contains a folder is used as given. The CSV is written even if a run is interrupted, so partial data is kept. Folders are created as needed.
 
@@ -216,7 +268,7 @@ Size-dependent parameters scale with the image width (tuned on a 6000 px wide fr
 
 ## Detection parameters
 
-Set them in Python with `DetectionConfig(...)` or on the command line (`analysis image` and `analysis video`) as `--k 4`, `--min-fraction 0.5`, and so on.
+Set them in Python with `DetectionConfig(...)` or on the command line (`analysis image`, `analysis video`) as `--k 4`, `--min-fraction 0.5`, and so on.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -230,6 +282,8 @@ Set them in Python with `DetectionConfig(...)` or on the command line (`analysis
 | `x_tol` | from width | Allowed x shift between bands for one line (about 10 at 6000 px) |
 | `smooth` | 5 | Smoothing width in px that merges split peaks |
 | `half_width` | 1 | Painted half-width of a line in px |
+| `strip_height` | 200 | Only this many rows around the image middle are analysed (curved lines stay straight in a strip, and it is faster); 0 or `None` = all rows |
+| `min_threshold` | 2.0 | Absolute floor of the threshold in 0-255 levels; lower it for dark images |
 
 ---
 
@@ -284,6 +338,10 @@ strip-line-finder/
         ├── detect.py                 DetectionConfig and the line detector
         ├── image.py                  analyse_image: detect, mark, save
         ├── video.py                  split_video, process_video
+        ├── tune.py                   tunes the detection settings on one photo
+        ├── folder.py                 analysis of a folder of photos, with warnings
+        ├── report.py                 aligns photo results with a ramp and plots them
+        ├── calibration.py            objective, sample and pixel size constants
         └── analysis.py               spacing statistics and the spacing plot
 ```
 
@@ -297,6 +355,8 @@ strip-line-finder/
 | `04_plot_spacing.py` | Mean spacing vs time with std error bars |
 | `05_dc2200_ramp.py` | DC2200 stepped current ramp (needs hardware) |
 | `06_dc2200_set.py` | Set the DC2200 current (needs hardware) |
+| `07_folder_analysis.py` | Analyse a folder of photos without questions |
+| `08_report.py` | Line photo results up with a ramp and plot |
 
 ---
 

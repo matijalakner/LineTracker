@@ -7,13 +7,14 @@ name = "strip-line-finder"
 version = "0.4.0"
 description = "Find thin vertical lines in images and videos, track their spacing over time, and drive Thorlabs DC2200 / PM40 instruments."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "numpy>=1.20.0",
     "pillow>=8.0.0",
     "opencv-python>=4.5.0",
     "matplotlib>=3.3",
+    "pandas>=1.5",
 ]
 
 [project.optional-dependencies]

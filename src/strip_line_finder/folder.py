@@ -274,7 +274,7 @@ def main_folder(
     """
     path = Path(path)
     photos = get_sorted_photos(path)
-    out_dir = Path(output_dir) / path.name
+    out_dir = Path(output_dir) / "folder" / path.name
 
     try:
         chosen = choose_parameters(photos[0], out_dir, interactive=interactive,
