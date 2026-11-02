@@ -1,10 +1,11 @@
 # Line Finder
 
-Find thin vertical lines in images and video, measure how their spacing changes over time, and control the Thorlabs lab hardware used in the same experiment (DC2200 LED driver and PM400 power meter).
+Find thin vertical lines in images and video, measure how their spacing changes over time, and control the lab hardware used in the same experiment (Thorlabs DC2200 LED driver, PM400 power meter and a Canon EOS R10 camera).
 
 ```text
 measurement analysis  image | video | folder | report | analyse   find lines, measure spacing
 measurement control   set | ramp | pm | liv        drive the instruments
+measurement control   camera info | photo | timelapse | video     take photos and videos
 ```
 
 ## Contents
@@ -13,6 +14,7 @@ measurement control   set | ramp | pm | liv        drive the instruments
 - [Quick start](#quick-start)
 - [Analysis](#analysis)
 - [Control](#control)
+- [Camera](#camera)
 - [Where the data goes](#where-the-data-goes)
 - [How the detection works](#how-the-detection-works)
 - [Detection parameters](#detection-parameters)
@@ -34,6 +36,8 @@ cd strip-line-finder
 sudo dnf install pipx
 pipx install -e .              # numpy, pillow, opencv-python, matplotlib, pandas
 pipx inject strip-line-finder pyusb  # adds pyusb, only needed for `control`
+sudo dnf install libgphoto2 gphoto2  # camera library + `gphoto2 --auto-detect`
+pipx inject strip-line-finder gphoto2  # only needed for `control camera` and `ramp --camera`
 measurement --help
 ```
 
@@ -46,10 +50,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")" || return 1
 ${PYTHON:-python3} -m venv measure \
   && source measure/bin/activate \
   && pip install --upgrade pip \
-  && pip install -e ".[hardware]" \
+  && pip install -e ".[hardware,camera]" \
   && echo "Ready: the 'measurement' command is available in this terminal."
 ```
-The `control` commands also need the separate `measurement_control` package (DC2200 driver). It is not installed automatically. Everything under `analysis` works without it, and the package imports fine either way; a clear error appears only when you start a measurement.
+The `control` commands also need the separate `measurement_control` package (DC2200 driver). It is not installed automatically. Everything under `analysis` works without it, and the package imports fine either way; a clear error appears only when you start a measurement. The same holds for the camera: `python-gphoto2` (extra `camera`) is loaded only when the camera is opened.
 
 `src/` is installed as the package `line_finder`:
 
@@ -76,6 +80,9 @@ measurement control set 0.25
 
 # light source: 0 -> 0.5 A in steps of 0.05 A, every step held for 2 s, and back
 measurement control ramp --min 0 --max 0.5 --step 0.05 --step-time 2
+
+# the same ramp with a photo in the middle of every step (Canon EOS R10)
+measurement control ramp --min 0 --max 0.5 --step 0.05 --step-time 2 --camera mysample --shutter 1/5 --iso 100
 ```
 
 ---
@@ -200,7 +207,7 @@ Currents are in **amperes**. Check your LED head's rating before running anythin
 | Command | What it does |
 |---|---|
 | `control set CURRENT` | Sets the DC2200 to a constant current (0 – 2 A) and **leaves the light on**. The user current limit is set to the same value. `set 0` switches the output off. |
-| `control ramp` | Steps the current from `--min` to `--max` and back, in steps of `--step` A, holding every step for `--step-time` s. All four are required. Optional: `--cycles` (default 1). The output is switched off at the end or on any error, including Ctrl+C. |
+| `control ramp` | Steps the current from `--min` to `--max` and back, in steps of `--step` A, holding every step for `--step-time` s. All four are required. Optional: `--cycles` (default 1). The output is switched off at the end or on any error, including Ctrl+C. With `--camera NAME` the Canon camera takes photos during the ramp (see [Ramp with photos](#ramp-with-photos)). |
 | `control pm` | Logs optical power with the PM400. Options: `--wavelength` (default 450 nm), `--averaging-count`, `--sample-duration`, `--sample-rate`. |
 | `control liv` | Ramps the current and logs power together. Options: `--i-min --i-max --ramp-duration --update-rate --cycles`, `--wavelength` (default 450 nm), `--averaging-count`, `--settle-time`. |
 
@@ -215,10 +222,94 @@ measurement control liv --i-max 0.05 --ramp-duration 10 --output-csv liv_run1.cs
 
 With `--min 0 --max 0.5 --step 0.1 --step-time 2` the current goes 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1, 0 A and every value is held for 2 s (22 s in total). The maximum is not repeated, and the last value is held for the full step time before the output is switched off. If `max − min` is not a multiple of `step`, the last step up is shorter so that the ramp always ends exactly on `--max`. The steps are timed from a clock, so they do not drift. `--max` may not exceed 2 A, and the user current limit of the device is set to `--max` for the run.
 
+### Ramp with photos
+
+`control ramp ... --camera NAME` runs the ramp and the Canon EOS R10 together. By default one photo is taken in the middle of every step, so every photo belongs to exactly one current:
+
+```bash
+measurement control ramp --min 0.05 --max 1 --step 0.05 --step-time 100 \
+    --camera mysample --shutter 1/250 --iso 100 --wb Daylight --sync-clock
+measurement analysis folder input/folder/mysample
+measurement analysis report mysample
+```
+
+| Option | Meaning |
+|---|---|
+| `--camera NAME` | Photos go to `input/folder/NAME/NAME_XXXX.jpg` (numbering continues) |
+| `--photo-delay S` | One photo per step, `S` seconds after the step starts (default: half the step time) |
+| `--photo-interval N` | Instead: a photo every `N` seconds from the ramp start, independent of the steps |
+| `--shutter --iso --wb --color-temp --picture-style --image-format --sync-clock --keep-on-card --input-dir` | As in [Camera](#camera) |
+
+- The camera is connected first; if it is not found, the LED is never switched on.
+- The camera runs in its own thread, so a slow capture or download never delays a current step. If a capture takes longer than the time between photos, the next photo is late and a warning is printed.
+- If the camera fails during the ramp, the ramp stops and the LED is switched off. Ctrl+C also stops both; photos and data taken so far are kept.
+- Next to the ramp CSV a photo log `ramp_<UTC>_photos.csv` is written with the same time stamp line and the same t = 0 as the ramp:
+
+```csv
+time_stamp,2026-11-02T07:31:11.102Z
+time_s,index,file,utc,step,cycle,direction,current_A
+0.301,0,mysample_0000.jpg,2026-11-02T07:31:11.403Z,1,1,up,0.05
+0.901,1,mysample_0001.jpg,2026-11-02T07:31:12.003Z,2,1,up,0.1
+```
+
+`current_A` is the current that was set when the photo was taken, independent of the camera clock.
+
 ### Setup
 
 1. Edit the instrument serial numbers in `src/ThorLabs/common.py`. USB product IDs and resource strings are defined there once, so they cannot disagree.
 2. The modules detach the Linux kernel driver while they run and re-attach it afterwards. This needs `pyusb` and usually elevated USB permissions (a udev rule for vendor `1313`, or `sudo`).
+
+## Camera
+
+`control camera` drives a Canon EOS R10 over USB through libgphoto2. Photos and videos are saved as
+
+```text
+input/folder/<name>/
+├── <name>_0000.jpg
+├── <name>_0001.jpg
+├── ...
+└── <name>_0042.mp4      videos use the same numbering
+```
+
+Numbering continues after the files already in the folder, so nothing is overwritten and a measurement can be continued with the same name. The folder can be analysed directly: `measurement analysis folder input/folder/<name>`.
+
+| Command | What it does |
+|---|---|
+| `camera info` | Shows the current settings and every value the camera accepts for them. |
+| `camera photo NAME` | Takes one photo. With `-i` the camera stays connected: Enter takes a photo, `q` + Enter quits. |
+| `camera timelapse NAME -n N` | Takes a photo every `N` seconds (first one at t = 0, clock-based, no drift). Stops after `--count` photos or `--duration` seconds, otherwise on Ctrl+C. |
+| `camera video NAME` | Records on the camera card and downloads the file. `--duration S`, or stops on Enter. Ctrl+C stops early and still downloads. `--delete-from-card` removes it from the card afterwards. |
+
+Settings (all optional; not given = keep what is set on the camera). Values are checked against the camera's own list, so `1/250`, `0.004` and `1/250s` all work:
+
+| Option | Example | Note |
+|---|---|---|
+| `--shutter` | `1/250`, `0.5`, `2` | mode dial on **M** (or Tv) |
+| `--iso` | `100`, `400`, `Auto` | mode dial on M, Av, Tv or P |
+| `--wb` | `Daylight`, `Tungsten`, `Auto` | white balance; a unique part of the name is enough |
+| `--color-temp` | `5200` | Kelvin; switches the white balance to colour temperature |
+| `--picture-style` | `Neutral`, `Faithful` | |
+| `--image-format` | `"Large Fine JPEG"` | must include a JPEG; with RAW+JPEG only the JPEG is kept |
+| `--sync-clock` | | sets the camera clock to the computer clock (so EXIF times match the ramp in `analysis report`) |
+
+Photos are captured into the camera RAM and only downloaded, so the card does not fill up (`--keep-on-card` keeps a copy). Every run writes `output/camera/camera_<UTC time>.csv` with `time_s, index, file, utc` (computer time when each capture started), after a `time_stamp` line like the other logs.
+
+```bash
+measurement control camera info
+measurement control camera photo sample-1 --shutter 1/250 --iso 200 --wb Daylight
+measurement control camera timelapse sample-1 -n 5 --duration 1200 --sync-clock
+measurement control camera video sample-1 --duration 60
+
+```
+
+Photos during a current ramp: use `control ramp ... --camera NAME`, see [Ramp with photos](#ramp-with-photos).
+
+### Camera setup
+
+1. `pip install -e ".[camera]"` (or `sudo dnf install python3-gphoto2`). Check the connection with `gphoto2 --auto-detect`.
+2. Camera on, USB data cable, **Wi-Fi and Bluetooth off** (the R10 disables USB control while they are connected), auto power off disabled.
+3. For video put the photo/movie switch on movie and insert a memory card.
+4. On GNOME the file manager claims the camera. If you get "could not claim the USB device": `gio mount -s gphoto2; pkill -f gvfs-gphoto2-volume-monitor`.
 
 ---
 
@@ -228,9 +319,10 @@ With `--min 0 --max 0.5 --step 0.1 --step-time 2` the current goes 0, 0.1, 0.2, 
 
 | Command | Folder | File |
 |---|---|---|
-| `control ramp` | `output/ramp/` | `ramp_<UTC time>.csv` |
+| `control ramp` | `output/ramp/` | `ramp_<UTC time>.csv`; with `--camera` also `ramp_<UTC time>_photos.csv` and the photos in `input/folder/<name>/` |
 | `control pm` | `output/pm/` | `pm_<UTC time>.csv` |
 | `control liv` | `output/liv/` | `liv_<UTC time>.csv` |
+| `control camera` | `input/folder/<name>/` | `<name>_XXXX.jpg`, `<name>_XXXX.mp4`; log in `output/camera/camera_<UTC time>.csv` |
 | `analysis image` | `output/image/<name>/` | marked image, `<name>_lines.csv` |
 | `analysis video` | `output/video/` | `frames/<name>/`, and `<name>/` with the marked frames and `lines.csv` |
 | `analysis folder` | `output/folder/<name>/` | `results.csv`, `parameters.json`, marked photos, `tuning/` |
@@ -316,7 +408,7 @@ rows = main_ramp(SimpleNamespace(i_min=0.0, i_max=0.5, step=0.05, step_time=2.0,
 # rows: (time_s, cycle, direction, current_A); the CSV starts with the UTC time stamp line
 ```
 
-Lower-level pieces: `detect_lines(img, config)` returns `(positions, signal, threshold)` for a NumPy image; `mark_image`, `plot_line_signal`, `split_video`, `read_lines_csv`, `read_time_stamp`, `spacing_stats` and `ramp_levels` are also exported. Hardware: `main_set_current`, `main_ramp`, `main_power_measurement` and `main_liv_measurement` (all take an object or dict with the settings; `output_csv` is optional).
+Lower-level pieces: `detect_lines(img, config)` returns `(positions, signal, threshold)` for a NumPy image; `mark_image`, `plot_line_signal`, `split_video`, `read_lines_csv`, `read_time_stamp`, `spacing_stats` and `ramp_levels` are also exported. Hardware: `main_set_current`, `main_ramp`, `main_power_measurement` and `main_liv_measurement` (all take an object or dict with the settings; `output_csv` is optional). Camera: `main_ramp_camera` (ramp with photos), `main_photo`, `main_timelapse`, `main_video`, `main_camera_info` (dicts as in `examples/09_camera.py`) and the lower-level `CanonCamera`.
 
 ---
 
@@ -331,6 +423,10 @@ strip-line-finder/
     ├── __init__.py                   public exports
     ├── cli.py                        `control` and `analysis` commands
     ├── utils.py                      UTC time stamps, CSV writing, output paths
+    ├── Canon/
+    │   ├── camera.py                 CanonCamera: connect, settings, capture, download (gphoto2)
+    │   ├── capture.py                photo, time-lapse and video commands, file numbering
+    │   └── ramp_camera.py            DC2200 ramp with photos (`control ramp --camera`)
     ├── ThorLabs/
     │   ├── common.py                 USB IDs, resource strings, timing helpers
     │   ├── usb_driver.py             kernel-driver detach (pyusb)
@@ -360,6 +456,8 @@ strip-line-finder/
 | `06_dc2200_set.py` | Set the DC2200 current (needs hardware) |
 | `07_folder_analysis.py` | Analyse a folder of photos without questions |
 | `08_report.py` | Line photo results up with a ramp and plot |
+| `09_camera.py` | Camera settings, a photo, a time-lapse and a video (needs the camera) |
+| `10_ramp_camera.py` | DC2200 ramp with a photo in every step (needs both) |
 
 ---
 
@@ -375,9 +473,16 @@ strip-line-finder/
 | `ramp` says `max must be <= 2.0 A` | The DC2200 limit is 2 A; lower `--max` |
 | `ramp` / `control` error `the following arguments are required` | `--min --max --step --step-time` must all be given |
 | `pyusb is required` | `pip install -e ".[hardware]"` |
+| `python-gphoto2 is required` | `pip install -e ".[camera]"` (or `sudo dnf install python3-gphoto2`) |
 | `measurement_control` error | Install that package and connect the instrument over USB |
 | `Thorlabs USB device ... not found` | Check the cable and the serial number and product ID in `src/ThorLabs/common.py` (`lsusb`) |
 | USB permission denied (Linux) | Add a udev rule for vendor `1313`, or run with `sudo` |
+| Camera: `could not claim the USB device` | `gio mount -s gphoto2; pkill -f gvfs-gphoto2-volume-monitor` |
+| Camera: `No camera found` | Camera on, data cable, Wi-Fi/Bluetooth off; check `gphoto2 --auto-detect` |
+| Camera: `'shutter' cannot be changed` | Mode dial on M (or Tv) |
+| Camera: `no JPEG` | Set the image quality to JPEG, or `--image-format "Large Fine JPEG"` |
+| `camera failed, ramp stopped` | See the camera error after it; the LED is already off |
+| Time-lapse warns `late` | The interval is shorter than one capture + download; use a larger `-n` |
 
 ## License
 

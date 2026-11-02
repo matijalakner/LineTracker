@@ -1,6 +1,9 @@
 """Command line interface.
 
     measurement control  {ramp, pm, set, liv}      instrument control (data -> output/<ramp|pm|liv>/)
+    measurement control  ramp ... --camera NAME    ramp with photos (photos -> input/folder/NAME/)
+    measurement control  camera {info, photo, timelapse, video}
+                                                   Canon EOS R10 (files -> input/folder/<name>/)
     measurement analysis {image, video, folder, report, analyse}   line detection
 """
 import argparse
@@ -14,6 +17,8 @@ from .strip_line_finder.detect import DetectionConfig
 from .strip_line_finder.folder import main_folder
 from .strip_line_finder.image import analyse_image
 from .strip_line_finder.video import process_video
+from .Canon.capture import main_camera_info, main_photo, main_timelapse, main_video
+from .Canon.ramp_camera import main_ramp_camera
 from .ThorLabs.DC2200 import main_ramp, main_set_current
 from .ThorLabs.PM400 import main_power_measurement
 from .ThorLabs.PM400_DC2200 import main_liv_measurement
@@ -51,6 +56,47 @@ def add_output_options(parser, kind):
                              f"is saved in <output-dir>/{kind}/.")
 
 
+def add_camera_options(parser, settings=True):
+    parser.add_argument("--sync-clock", action="store_true",
+                        help="set the camera clock to the computer clock first")
+    if not settings:
+        return
+    group = parser.add_argument_group(
+        "camera settings (not given = keep the value set on the camera; "
+        "see 'control camera info' for the allowed values)")
+    group.add_argument("--shutter", default=None,
+                       help="shutter speed, e.g. 1/250, 1/30, 0.5, 2 (mode dial on M or Tv)")
+    group.add_argument("--iso", default=None, help="ISO, e.g. 100, 400, Auto")
+    group.add_argument("--wb", dest="whitebalance", default=None,
+                       help="white balance, e.g. Auto, Daylight, Tungsten, \"Color Temperature\"")
+    group.add_argument("--color-temp", dest="colortemperature", default=None,
+                       help="colour temperature in K, e.g. 5200 (also sets the white "
+                            "balance to colour temperature)")
+    group.add_argument("--picture-style", dest="picturestyle", default=None,
+                       help="picture style, e.g. Standard, Neutral, Faithful")
+    group.add_argument("--image-format", dest="imageformat", default=None,
+                       help="image quality, e.g. \"Large Fine JPEG\" (photos must include a JPEG)")
+
+
+def add_capture_options(parser):
+    parser.add_argument("name", help="measurement name: files are saved as "
+                                     "<input-dir>/folder/<name>/<name>_XXXX.jpg")
+    parser.add_argument("--input-dir", default="input",
+                        help="root folder for the captured files (default: input)")
+    add_output_options(parser, "camera")
+    add_camera_options(parser)
+
+
+def camera_cfg(args, **extra):
+    keys = ("name", "input_dir", "sync_clock", "shutter", "iso", "whitebalance",
+            "colortemperature", "picturestyle", "imageformat")
+    cfg = {k: getattr(args, k, None) for k in keys}
+    if hasattr(args, "output_csv"):
+        cfg["output_csv"] = output_csv_path(args.output_dir, "camera", args.output_csv)
+    cfg.update(extra)
+    return cfg
+
+
 def config_from_args(args):
     return DetectionConfig(**{n: getattr(args, n) for n, _, _ in DETECTION_OPTIONS
                               if getattr(args, n) is not None})
@@ -81,6 +127,22 @@ def build_parser():
     ramp.add_argument("--cycles", type=int, default=1,
                       help="Number of min -> max -> min cycles (default: 1).")
     add_output_options(ramp, "ramp")
+    cam_ramp = ramp.add_argument_group(
+        "camera (optional): take photos with the Canon EOS R10 during the ramp")
+    cam_ramp.add_argument("--camera", metavar="NAME", default=None,
+                          help="take photos during the ramp, saved as "
+                               "<input-dir>/folder/NAME/NAME_XXXX.jpg; a photo log "
+                               "goes next to the ramp CSV (ramp_<UTC>_photos.csv)")
+    cam_ramp.add_argument("--photo-delay", type=float, default=None,
+                          help="one photo per step, this many seconds after the step "
+                               "starts (default: half the step time)")
+    cam_ramp.add_argument("--photo-interval", type=float, default=None,
+                          help="instead: a photo every N seconds from the ramp start")
+    cam_ramp.add_argument("--input-dir", default="input",
+                          help="root folder for the photos (default: input)")
+    cam_ramp.add_argument("--keep-on-card", action="store_true",
+                          help="also keep the photos on the camera's memory card")
+    add_camera_options(ramp)
 
     pm = ctl.add_parser("pm", help="Detect light power with the PM40 power meter.")
     pm.add_argument("--wavelength", type=float, default=450.0,
@@ -110,6 +172,40 @@ def build_parser():
     liv.add_argument("--settle-time", type=float, default=None,
                      help="seconds to wait after each current step (default: automatic)")
     add_output_options(liv, "liv")
+
+    cam = ctl.add_parser(
+        "camera", help="Canon EOS R10 over USB: manual photos, a photo every N seconds, "
+                       "or video. Files go to <input-dir>/folder/<name>/<name>_XXXX.jpg "
+                       "(.mp4 for video); a capture log to <output-dir>/camera/.")
+    cmd = cam.add_subparsers(dest="camera_command", required=True)
+
+    info = cmd.add_parser("info", help="Show the current settings and their allowed values.")
+    add_camera_options(info, settings=False)
+
+    ph = cmd.add_parser("photo", help="Take one photo now (with -i: a photo on every Enter).")
+    add_capture_options(ph)
+    ph.add_argument("-i", "--interactive", action="store_true",
+                    help="keep the camera open: Enter takes a photo, q + Enter quits")
+    ph.add_argument("--keep-on-card", action="store_true",
+                    help="also keep the photos on the camera's memory card")
+
+    tl = cmd.add_parser("timelapse", help="Take a photo every N seconds.")
+    add_capture_options(tl)
+    tl.add_argument("-n", "--interval", type=float, required=True,
+                    help="seconds between photos (first photo at t = 0)")
+    tl.add_argument("--count", type=int, default=None, help="number of photos")
+    tl.add_argument("--duration", type=float, default=None,
+                    help="total time in seconds (without --count/--duration: until Ctrl+C)")
+    tl.add_argument("--keep-on-card", action="store_true",
+                    help="also keep the photos on the camera's memory card")
+
+    vd = cmd.add_parser("video", help="Record a video on the camera card and download it "
+                                      "(camera switch on movie, memory card inserted).")
+    add_capture_options(vd)
+    vd.add_argument("--duration", type=float, default=None,
+                    help="recording time in seconds (default: until Enter)")
+    vd.add_argument("--delete-from-card", action="store_true",
+                    help="delete the video from the card after the download")
 
     # ======================================================================
     # analysis
@@ -187,10 +283,18 @@ def build_parser():
 
 def run_control(args):
     if args.command == "ramp":
-        main_ramp(SimpleNamespace(
-            i_min=args.i_min, i_max=args.i_max, step=args.step,
-            step_time=args.step_time, cycles=args.cycles,
-            output_csv=output_csv_path(args.output_dir, "ramp", args.output_csv)))
+        ramp_cfg = dict(i_min=args.i_min, i_max=args.i_max, step=args.step,
+                        step_time=args.step_time, cycles=args.cycles,
+                        output_csv=output_csv_path(args.output_dir, "ramp", args.output_csv))
+        if args.camera:
+            if args.photo_delay is not None and args.photo_interval is not None:
+                raise ValueError("use either --photo-delay or --photo-interval, not both")
+            main_ramp_camera({**camera_cfg(args), **ramp_cfg, "camera": args.camera,
+                              "photo_delay": args.photo_delay,
+                              "photo_interval": args.photo_interval,
+                              "keep_on_card": args.keep_on_card})
+        else:
+            main_ramp(SimpleNamespace(**ramp_cfg))
         print("Ramp completed.")
     elif args.command == "pm":
         main_power_measurement(SimpleNamespace(
@@ -206,6 +310,23 @@ def run_control(args):
             wavelength=args.wavelength, averaging_count=args.averaging_count,
             settle_time=args.settle_time,
             output_csv=output_csv_path(args.output_dir, "liv", args.output_csv)))
+    elif args.command == "camera":
+        run_camera(args)
+
+
+def run_camera(args):
+    c = args.camera_command
+    if c == "info":
+        main_camera_info(camera_cfg(args))
+    elif c == "photo":
+        main_photo(camera_cfg(args, interactive=args.interactive,
+                              keep_on_card=args.keep_on_card))
+    elif c == "timelapse":
+        main_timelapse(camera_cfg(args, interval=args.interval, count=args.count,
+                                  duration=args.duration, keep_on_card=args.keep_on_card))
+    elif c == "video":
+        main_video(camera_cfg(args, duration=args.duration,
+                              delete_from_card=args.delete_from_card))
 
 
 def run_analysis(args):
@@ -254,6 +375,9 @@ def main(argv=None):
     except KeyboardInterrupt:
         if args.group == "control" and args.command in ("ramp", "liv"):
             sys.exit("Interrupted; LED output was switched off.")
+        if args.group == "control" and args.command == "camera":
+            sys.exit("Interrupted; files captured so far are kept"
+                     + (" and recording was stopped." if args.camera_command == "video" else "."))
         sys.exit("Interrupted.")
     except Exception as e:
         sys.exit(f"Error: {e}")

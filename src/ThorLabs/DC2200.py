@@ -84,11 +84,17 @@ def _import_dc2200():
     return USBCommunicator, DC2200
 
 
-def main_ramp(cfg):
+def main_ramp(cfg, on_start=None, on_step=None):
     """Stepped current ramp for the ThorLabs DC2200: min -> max -> min.
 
     cfg needs: i_min, i_max (A), step (A), step_time (s, how long every step is
     held); optional: cycles (default 1), output_csv (path).
+
+    Optional hooks (used by the camera, see Canon/ramp_camera.py):
+    ``on_start(t0, time_stamp, sequence)`` right before the first step, with
+    t0 the time.monotonic() of the ramp start; ``on_step(k, cycle, direction,
+    current)`` right after every current change. An exception raised in a hook
+    stops the ramp (and switches the LED off).
 
     Returns the list of rows (time_s, cycle, direction, current_A). If output_csv
     is set the rows are written there, also when the run is interrupted. The
@@ -115,10 +121,14 @@ def main_ramp(cfg):
 
                     time_stamp = utc_timestamp()
                     t0 = time.monotonic()
+                    if on_start:
+                        on_start(t0, time_stamp, sequence)
                     for k, (cycle, direction, current) in enumerate(sequence):
                         sleep_until(t0 + k * p["step_time"])    # clock-based, no drift
                         dc2200.configure_constant_current(current)
                         rows.append((round(time.monotonic() - t0, 4), cycle, direction, current))
+                        if on_step:
+                            on_step(k, cycle, direction, current)
                         print(f"[{k + 1}/{len(sequence)}] cycle {cycle} {direction}: "
                               f"{current * 1e3:.2f} mA")
                     sleep_until(t0 + len(sequence) * p["step_time"])   # hold the last step
