@@ -22,9 +22,13 @@ def _exif_time(path):
     try:
         with Image.open(path) as im:
             exif = im.getexif()
-            raw = exif.get_ifd(0x8769).get(36867) or exif.get(306)   # DateTimeOriginal, else DateTime
+            sub = exif.get_ifd(0x8769)
+            raw = sub.get(36867) or exif.get(306)   # DateTimeOriginal, else DateTime
+            frac = sub.get(37521) if sub.get(36867) else None    # SubSecTimeOriginal
         if raw:
-            return datetime.strptime(str(raw).strip(), "%Y:%m:%d %H:%M:%S").astimezone().timestamp()
+            t = datetime.strptime(str(raw).strip(), "%Y:%m:%d %H:%M:%S").astimezone().timestamp()
+            digits = "".join(c for c in str(frac or "") if c.isdigit())
+            return t + (int(digits) / 10 ** len(digits) if digits else 0.0)
     except Exception:
         pass
     return None

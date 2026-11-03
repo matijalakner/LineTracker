@@ -1,11 +1,12 @@
 # Line Finder
 
-Find thin vertical lines in images and video, measure how their spacing changes over time, and control the lab hardware used in the same experiment (Thorlabs DC2200 LED driver, PM400 power meter and a Canon EOS R10 camera).
+Find thin vertical lines in images and video, measure how their spacing changes over time, and control the lab hardware used in the same experiment (Thorlabs DC2200 LED driver, PM400 power meter, a Canon EOS R10 camera and a Teledyne FLIR Blackfly S microscope camera).
 
 ```text
 measurement analysis  image | video | folder | report | analyse   find lines, measure spacing
 measurement control   set | ramp | pm | liv        drive the instruments
-measurement control   camera info | photo | timelapse | video     take photos and videos
+measurement control   camera info | photo | timelapse | video     take photos and videos (Canon)
+measurement control   flir list | info | photo | timelapse | video    the same with the FLIR Blackfly S
 ```
 
 ## Contents
@@ -15,6 +16,7 @@ measurement control   camera info | photo | timelapse | video     take photos an
 - [Analysis](#analysis)
 - [Control](#control)
 - [Camera](#camera)
+- [FLIR camera](#flir-camera)
 - [Where the data goes](#where-the-data-goes)
 - [How the detection works](#how-the-detection-works)
 - [Detection parameters](#detection-parameters)
@@ -207,7 +209,7 @@ Currents are in **amperes**. Check your LED head's rating before running anythin
 | Command | What it does |
 |---|---|
 | `control set CURRENT` | Sets the DC2200 to a constant current (0 – 2 A) and **leaves the light on**. The user current limit is set to the same value. `set 0` switches the output off. |
-| `control ramp` | Steps the current from `--min` to `--max` and back, in steps of `--step` A, holding every step for `--step-time` s. All four are required. Optional: `--cycles` (default 1). The output is switched off at the end or on any error, including Ctrl+C. With `--camera NAME` the Canon camera takes photos during the ramp (see [Ramp with photos](#ramp-with-photos)). |
+| `control ramp` | Steps the current from `--min` to `--max` and back, in steps of `--step` A, holding every step for `--step-time` s. All four are required. Optional: `--cycles` (default 1). The output is switched off at the end or on any error, including Ctrl+C. With `--camera NAME` the Canon camera (or with `--camera-type flir` the FLIR camera) takes photos during the ramp (see [Ramp with photos](#ramp-with-photos)). |
 | `control pm` | Logs optical power with the PM400. Options: `--wavelength` (default 450 nm), `--averaging-count`, `--sample-duration`, `--sample-rate`. |
 | `control liv` | Ramps the current and logs power together. Options: `--i-min --i-max --ramp-duration --update-rate --cycles`, `--wavelength` (default 450 nm), `--averaging-count`, `--settle-time`. |
 
@@ -239,6 +241,12 @@ measurement analysis report mysample
 | `--photo-delay S` | One photo per step, `S` seconds after the step starts (default: half the step time) |
 | `--photo-interval N` | Instead: a photo every `N` seconds from the ramp start, independent of the steps |
 | `--shutter --iso --wb --color-temp --picture-style --image-format --sync-clock --keep-on-card --input-dir` | As in [Camera](#camera) |
+| `--camera-type flir` | Use the FLIR Blackfly S instead; then `--shutter --wb --gain --wb-red --wb-blue --gamma --black-level --pixel-format --save-format --serial --backend` as in [FLIR camera](#flir-camera) |
+
+```bash
+measurement control ramp --min 0.05 --max 1 --step 0.05 --step-time 100 \
+    --camera mysample --camera-type flir --shutter 1/250 --gain 0 --wb off
+```
 
 - The camera is connected first; if it is not found, the LED is never switched on.
 - The camera runs in its own thread, so a slow capture or download never delays a current step. If a capture takes longer than the time between photos, the next photo is late and a warning is printed.
@@ -313,6 +321,74 @@ Photos during a current ramp: use `control ramp ... --camera NAME`, see [Ramp wi
 
 ---
 
+## FLIR camera
+
+`control flir` drives the Teledyne FLIR Blackfly S **BFS-U3-27S5C-C** on the microscope (Sony IMX429, 1936 × 1464, colour, global shutter, USB3 Vision) and works like `control camera`: the same files, numbering and logs, so `analysis folder` and `analysis report` work on its photos unchanged.
+
+```text
+input/folder/<name>/<name>_0000.jpg      (.png / .tif with --save-format)
+input/folder/<name>/<name>_0001.mp4      video, recorded on the computer
+output/camera/flir_<UTC time>.csv        time_s, index, file, utc
+output/camera/flir_<UTC time>_frames.csv video only: the time of every frame
+```
+
+| Command | What it does |
+|---|---|
+| `flir list` | Lists the connected cameras with their serial numbers. |
+| `flir info` | Shows the current settings with their allowed values or ranges. |
+| `flir photo NAME` | Takes one photo. With `-i`: Enter takes a photo, `q` + Enter quits. |
+| `flir timelapse NAME -n N` | A photo every `N` seconds; `--count` / `--duration`, otherwise until Ctrl+C. |
+| `flir video NAME` | Records the stream to `.mp4` (`--fps`, default 10; `--duration`, otherwise until Enter). |
+
+Settings (all optional; not given = keep what is set on the camera):
+
+| Option | Example | Note |
+|---|---|---|
+| `--shutter` / `--exposure` | `1/250`, `0.004`, `4ms`, `250us`, `auto` | a plain number is seconds, as for the Canon; 15 µs – 30 s |
+| `--gain` | `0`, `6.5`, `auto` | dB, 0 – 48 (the camera has no ISO) |
+| `--wb` | `off`, `once`, `auto` | automatic white balance |
+| `--wb-red`, `--wb-blue` | `1.4`, `2.0` | fixed white balance ratios (green = 1); switch the automatic off |
+| `--gamma` | `1.0`, `off` | |
+| `--black-level` | `1.5` | % |
+| `--pixel-format` | `BGR8`, `BayerRG8`, `BayerRG16`, `Mono8` | default BGR8 (colour from the camera); 16-bit needs `--save-format png`/`tiff` |
+| `--save-format` | `jpg`, `png`, `tiff` | default `jpg`; png/tiff are lossless |
+| `--defaults` | | load the factory defaults first |
+| `--serial`, `--backend` | `23306230`, `aravis` | which camera, and which library (default: Spinnaker if installed, else Aravis) |
+
+For measurements fix the exposure, gain and white balance (`--shutter 1/250 --gain 0 --wb off`); with `auto` the camera changes them between photos and the brightness is no longer comparable.
+
+```bash
+measurement control flir list
+measurement control flir info
+measurement control flir photo sample-1 --shutter 1/250 --gain 0 --wb off
+measurement control flir timelapse sample-1 -n 5 --duration 1200 --save-format png
+measurement control flir video sample-1 --duration 60 --fps 20
+```
+
+How it differs from the Canon:
+
+- Every photo is a fresh exposure started by a software trigger at the moment of the capture, so there is no delay for a download and photos can be taken many times per second.
+- The camera has no clock and no card. The computer time of the trigger is written into the photo's EXIF (`DateTimeOriginal` with milliseconds), so `--sync-clock` and `--keep-on-card` are not needed.
+- Video is recorded on the computer. If the computer cannot keep up, frames are dropped and a warning is printed; the real time of every frame is in `_frames.csv`.
+
+### FLIR camera setup
+
+The camera needs one of two libraries (neither is on PyPI):
+
+**Spinnaker + PySpin** (Teledyne's SDK; Windows and Ubuntu officially):
+1. Download the Spinnaker SDK and the PySpin wheel matching your Python from teledynevisionsolutions.com (Spinnaker downloads). Install the SDK (it adds the udev rule and the `flirimaging` group).
+2. `pip install spinnaker_python-<version>-cp3XX-...whl` into the same environment.
+3. Check with SpinView or `measurement control flir list`.
+
+**Aravis** (open source; easiest on Fedora):
+1. `sudo dnf install aravis-0.8 aravis-0.8-viewer python3-gobject` (if your Fedora has no `aravis-0.8` package: `sudo dnf copr enable emmanuelp/Aravis` first). Ubuntu: `sudo apt install gir1.2-aravis-0.8 aravis-tools python3-gi`.
+2. The environment must see the system `gi` module: create it with `python3 -m venv --system-site-packages measure`, or for pipx: `pipx install --system-site-packages -e .`.
+3. USB permissions: install Aravis's udev rule (`aravis.rules`, from the Aravis source, into `/etc/udev/rules.d/`) or test once with `sudo`. Check with `arv-tool-0.8` or `measurement control flir list`.
+
+Both: use a USB3 port (blue) and on Linux raise the USB buffer for full-speed video: `echo 1000 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb`.
+
+---
+
 ## Where the data goes
 
 `--output-dir` (default `output`) is the root for everything.
@@ -323,6 +399,7 @@ Photos during a current ramp: use `control ramp ... --camera NAME`, see [Ramp wi
 | `control pm` | `output/pm/` | `pm_<UTC time>.csv` |
 | `control liv` | `output/liv/` | `liv_<UTC time>.csv` |
 | `control camera` | `input/folder/<name>/` | `<name>_XXXX.jpg`, `<name>_XXXX.mp4`; log in `output/camera/camera_<UTC time>.csv` |
+| `control flir` | `input/folder/<name>/` | `<name>_XXXX.jpg` (`.png`, `.tif`), `<name>_XXXX.mp4`; log in `output/camera/flir_<UTC time>.csv` |
 | `analysis image` | `output/image/<name>/` | marked image, `<name>_lines.csv` |
 | `analysis video` | `output/video/` | `frames/<name>/`, and `<name>/` with the marked frames and `lines.csv` |
 | `analysis folder` | `output/folder/<name>/` | `results.csv`, `parameters.json`, marked photos, `tuning/` |
@@ -408,7 +485,7 @@ rows = main_ramp(SimpleNamespace(i_min=0.0, i_max=0.5, step=0.05, step_time=2.0,
 # rows: (time_s, cycle, direction, current_A); the CSV starts with the UTC time stamp line
 ```
 
-Lower-level pieces: `detect_lines(img, config)` returns `(positions, signal, threshold)` for a NumPy image; `mark_image`, `plot_line_signal`, `split_video`, `read_lines_csv`, `read_time_stamp`, `spacing_stats` and `ramp_levels` are also exported. Hardware: `main_set_current`, `main_ramp`, `main_power_measurement` and `main_liv_measurement` (all take an object or dict with the settings; `output_csv` is optional). Camera: `main_ramp_camera` (ramp with photos), `main_photo`, `main_timelapse`, `main_video`, `main_camera_info` (dicts as in `examples/09_camera.py`) and the lower-level `CanonCamera`.
+Lower-level pieces: `detect_lines(img, config)` returns `(positions, signal, threshold)` for a NumPy image; `mark_image`, `plot_line_signal`, `split_video`, `read_lines_csv`, `read_time_stamp`, `spacing_stats` and `ramp_levels` are also exported. Hardware: `main_set_current`, `main_ramp`, `main_power_measurement` and `main_liv_measurement` (all take an object or dict with the settings; `output_csv` is optional). Camera: `main_ramp_camera` (ramp with photos), `main_photo`, `main_timelapse`, `main_video`, `main_camera_info` (dicts as in `examples/09_camera.py`) and the lower-level `CanonCamera`. FLIR: `main_flir_list`, `main_flir_info`, `main_flir_photo`, `main_flir_timelapse`, `main_flir_video` (dicts as in `examples/11_flir_camera.py`), the lower-level `FlirCamera`, and `main_ramp_camera` with `"camera_type": "flir"`.
 
 ---
 
@@ -426,7 +503,11 @@ strip-line-finder/
     ├── Canon/
     │   ├── camera.py                 CanonCamera: connect, settings, capture, download (gphoto2)
     │   ├── capture.py                photo, time-lapse and video commands, file numbering
-    │   └── ramp_camera.py            DC2200 ramp with photos (`control ramp --camera`)
+    │   └── ramp_camera.py            DC2200 ramp with photos (`control ramp --camera`, Canon or FLIR)
+    ├── FLIR/
+    │   ├── backends.py               Spinnaker/PySpin and Aravis access to the GenICam features
+    │   ├── camera.py                 FlirCamera: settings, software-triggered photos, EXIF time
+    │   └── capture.py                `control flir` photo, time-lapse and video commands
     ├── ThorLabs/
     │   ├── common.py                 USB IDs, resource strings, timing helpers
     │   ├── usb_driver.py             kernel-driver detach (pyusb)
@@ -458,6 +539,7 @@ strip-line-finder/
 | `08_report.py` | Line photo results up with a ramp and plot |
 | `09_camera.py` | Camera settings, a photo, a time-lapse and a video (needs the camera) |
 | `10_ramp_camera.py` | DC2200 ramp with a photo in every step (needs both) |
+| `11_flir_camera.py` | FLIR Blackfly S: settings, a photo, a time-lapse and a video (needs the camera) |
 
 ---
 
@@ -481,6 +563,11 @@ strip-line-finder/
 | Camera: `No camera found` | Camera on, data cable, Wi-Fi/Bluetooth off; check `gphoto2 --auto-detect` |
 | Camera: `'shutter' cannot be changed` | Mode dial on M (or Tv) |
 | Camera: `no JPEG` | Set the image quality to JPEG, or `--image-format "Large Fine JPEG"` |
+| FLIR: `no library for the FLIR camera is installed` | Install Spinnaker + PySpin, or Aravis + PyGObject; see [FLIR camera setup](#flir-camera-setup) |
+| FLIR: `no FLIR camera ... was found` | USB3 cable, udev rule / permissions; close SpinView; `measurement control flir list` |
+| FLIR: `ExposureTime ... outside the allowed range` | 15 µs – 30 s; with `--fps` the exposure must also be shorter than 1/fps |
+| FLIR: `cannot be saved as JPEG` | 16-bit pixel format: add `--save-format png` (or `tiff`) |
+| FLIR: video warns `frames were dropped` | Lower `--fps`, raise `usbfs_memory_mb`, or use a faster disk |
 | `camera failed, ramp stopped` | See the camera error after it; the LED is already off |
 | Time-lapse warns `late` | The interval is shorter than one capture + download; use a larger `-n` |
 

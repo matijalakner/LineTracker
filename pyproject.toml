@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "strip-line-finder"
 version = "0.5.0"
-description = "Find thin vertical lines in images and videos, track their spacing over time, and drive Thorlabs DC2200 / PM40 instruments and a Canon EOS camera."
+description = "Find thin vertical lines in images and videos, track their spacing over time, and drive Thorlabs DC2200 / PM40 instruments, a Canon EOS camera and a FLIR Blackfly S camera."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -22,6 +22,9 @@ dependencies = [
 hardware = ["pyusb>=1.2"]
 # Needed only for `control camera` (Canon EOS over USB, needs libgphoto2)
 camera = ["gphoto2>=2.5"]
+# `control flir` (FLIR Blackfly S) needs one of these, neither is on PyPI:
+#   Spinnaker SDK + its PySpin wheel (teledynevisionsolutions.com), or
+#   Aravis + PyGObject from the system packages (venv with --system-site-packages)
 
 [project.scripts]
 measurement = "line_finder.cli:main"
@@ -30,10 +33,11 @@ measurement = "line_finder.cli:main"
 # installed as `line_finder`, with the two subpackages below it.
 [tool.setuptools]
 packages = ["line_finder", "line_finder.strip_line_finder", "line_finder.ThorLabs",
-            "line_finder.Canon"]
+            "line_finder.Canon", "line_finder.FLIR"]
 
 [tool.setuptools.package-dir]
 line_finder = "src"
 "line_finder.strip_line_finder" = "src/strip_line_finder"
 "line_finder.ThorLabs" = "src/ThorLabs"
 "line_finder.Canon" = "src/Canon"
+"line_finder.FLIR" = "src/FLIR"

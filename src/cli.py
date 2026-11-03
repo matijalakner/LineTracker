@@ -4,6 +4,8 @@
     measurement control  ramp ... --camera NAME    ramp with photos (photos -> input/folder/NAME/)
     measurement control  camera {info, photo, timelapse, video}
                                                    Canon EOS R10 (files -> input/folder/<name>/)
+    measurement control  flir {list, info, photo, timelapse, video}
+                                                   FLIR Blackfly S (files -> input/folder/<name>/)
     measurement analysis {image, video, folder, report, analyse}   line detection
 """
 import argparse
@@ -19,10 +21,12 @@ from .strip_line_finder.image import analyse_image
 from .strip_line_finder.video import process_video
 from .Canon.capture import main_camera_info, main_photo, main_timelapse, main_video
 from .Canon.ramp_camera import main_ramp_camera
+from .FLIR.capture import (main_flir_info, main_flir_list, main_flir_photo,
+                           main_flir_timelapse, main_flir_video)
 from .ThorLabs.DC2200 import main_ramp, main_set_current
 from .ThorLabs.PM400 import main_power_measurement
 from .ThorLabs.PM400_DC2200 import main_liv_measurement
-from .utils import output_csv_path
+from .utils import output_csv_path, utc_timestamp
 
 DETECTION_OPTIONS = [
     ("n_blocks", int, "horizontal bands that must agree (default 8)"),
@@ -47,12 +51,12 @@ def add_detection_options(parser):
                            default=None, help=text)
 
 
-def add_output_options(parser, kind):
+def add_output_options(parser, kind, prefix=None):
     parser.add_argument("--output-dir", default="output",
                         help=f"root output folder; data goes to <output-dir>/{kind}/ "
                              "(default: output)")
     parser.add_argument("--output-csv", default=None,
-                        help=f"CSV file name (default: {kind}_<UTC time>.csv). A plain name "
+                        help=f"CSV file name (default: {prefix or kind}_<UTC time>.csv). A plain name "
                              f"is saved in <output-dir>/{kind}/.")
 
 
@@ -97,6 +101,65 @@ def camera_cfg(args, **extra):
     return cfg
 
 
+def add_flir_options(parser, shared=True, connection_only=False):
+    """FLIR Blackfly S options. shared=False leaves out --shutter/--wb (the ramp has them)."""
+    conn = parser.add_argument_group("FLIR camera selection")
+    conn.add_argument("--serial", default=None,
+                      help="serial number of the camera (default: the first one found; "
+                           "see 'control flir list')")
+    conn.add_argument("--backend", choices=("auto", "spinnaker", "aravis"), default="auto",
+                      help="library used to talk to the camera (default: auto = "
+                           "Spinnaker/PySpin if installed, otherwise Aravis)")
+    if connection_only:
+        return
+    group = parser.add_argument_group(
+        "FLIR camera settings (not given = keep the value set on the camera; "
+        "see 'control flir info' for the allowed values)")
+    if shared:
+        group.add_argument("--shutter", "--exposure", dest="shutter", default=None,
+                           help="exposure time: 1/250 or 0.004 (s), 4ms, 4000us, or auto")
+        group.add_argument("--wb", dest="whitebalance", default=None,
+                           help="automatic white balance: off, once or auto")
+    group.add_argument("--gain", default=None, help="gain in dB (0 - 48), or auto")
+    group.add_argument("--wb-red", type=float, default=None,
+                       help="white balance red ratio (green = 1); switches the auto off")
+    group.add_argument("--wb-blue", type=float, default=None,
+                       help="white balance blue ratio (green = 1); switches the auto off")
+    group.add_argument("--gamma", default=None, help="gamma, e.g. 1.0, or off")
+    group.add_argument("--black-level", type=float, default=None, help="black level in %%")
+    group.add_argument("--pixel-format", default=None,
+                       help="BGR8 (default, colour from the camera), BayerRG8, BayerRG16, "
+                            "Mono8, Mono16 (16-bit needs --save-format png or tiff)")
+    group.add_argument("--save-format", choices=("jpg", "png", "tiff"), default="jpg",
+                       help="photo file type (default: jpg; png/tiff are lossless)")
+    group.add_argument("--quality", type=int, default=95, help="JPEG quality (default: 95)")
+    group.add_argument("--defaults", action="store_true",
+                       help="load the factory default settings first")
+
+
+def add_flir_capture_options(parser):
+    parser.add_argument("name", help="measurement name: files are saved as "
+                                     "<input-dir>/folder/<name>/<name>_XXXX.jpg")
+    parser.add_argument("--input-dir", default="input",
+                        help="root folder for the captured files (default: input)")
+    add_output_options(parser, "camera", prefix="flir")
+    add_flir_options(parser)
+
+
+FLIR_KEYS = ("name", "input_dir", "serial", "backend", "shutter", "gain", "whitebalance",
+             "wb_red", "wb_blue", "gamma", "black_level", "pixel_format", "save_format",
+             "quality", "defaults", "fps")
+
+
+def flir_cfg(args, **extra):
+    cfg = {k: getattr(args, k, None) for k in FLIR_KEYS}
+    if hasattr(args, "output_csv"):
+        name = args.output_csv or f"flir_{utc_timestamp(compact=True)}.csv"
+        cfg["output_csv"] = output_csv_path(args.output_dir, "camera", name)
+    cfg.update(extra)
+    return cfg
+
+
 def config_from_args(args):
     return DetectionConfig(**{n: getattr(args, n) for n, _, _ in DETECTION_OPTIONS
                               if getattr(args, n) is not None})
@@ -128,7 +191,8 @@ def build_parser():
                       help="Number of min -> max -> min cycles (default: 1).")
     add_output_options(ramp, "ramp")
     cam_ramp = ramp.add_argument_group(
-        "camera (optional): take photos with the Canon EOS R10 during the ramp")
+        "camera (optional): take photos with the Canon EOS R10 or the FLIR Blackfly S "
+        "during the ramp")
     cam_ramp.add_argument("--camera", metavar="NAME", default=None,
                           help="take photos during the ramp, saved as "
                                "<input-dir>/folder/NAME/NAME_XXXX.jpg; a photo log "
@@ -142,7 +206,10 @@ def build_parser():
                           help="root folder for the photos (default: input)")
     cam_ramp.add_argument("--keep-on-card", action="store_true",
                           help="also keep the photos on the camera's memory card")
+    cam_ramp.add_argument("--camera-type", choices=("canon", "flir"), default="canon",
+                          help="which camera takes the photos (default: canon)")
     add_camera_options(ramp)
+    add_flir_options(ramp, shared=False)
 
     pm = ctl.add_parser("pm", help="Detect light power with the PM40 power meter.")
     pm.add_argument("--wavelength", type=float, default=450.0,
@@ -206,6 +273,41 @@ def build_parser():
                     help="recording time in seconds (default: until Enter)")
     vd.add_argument("--delete-from-card", action="store_true",
                     help="delete the video from the card after the download")
+
+    flir = ctl.add_parser(
+        "flir", help="FLIR Blackfly S (BFS-U3-27S5C-C) over USB3: manual photos, a photo "
+                     "every N seconds, or video. Files go to "
+                     "<input-dir>/folder/<name>/<name>_XXXX.jpg (.mp4 for video); a capture "
+                     "log to <output-dir>/camera/flir_<UTC>.csv.")
+    fcmd = flir.add_subparsers(dest="flir_command", required=True)
+
+    fl = fcmd.add_parser("list", help="List the connected cameras.")
+    fl.add_argument("--backend", choices=("auto", "spinnaker", "aravis"), default="auto")
+
+    fi = fcmd.add_parser("info", help="Show the current settings and their allowed values.")
+    add_flir_options(fi, connection_only=True)
+
+    fp = fcmd.add_parser("photo", help="Take one photo now (with -i: a photo on every Enter).")
+    add_flir_capture_options(fp)
+    fp.add_argument("-i", "--interactive", action="store_true",
+                    help="keep the camera open: Enter takes a photo, q + Enter quits")
+
+    ft = fcmd.add_parser("timelapse", help="Take a photo every N seconds.")
+    add_flir_capture_options(ft)
+    ft.add_argument("-n", "--interval", type=float, required=True,
+                    help="seconds between photos (first photo at t = 0)")
+    ft.add_argument("--count", type=int, default=None, help="number of photos")
+    ft.add_argument("--duration", type=float, default=None,
+                    help="total time in seconds (without --count/--duration: until Ctrl+C)")
+
+    fv = fcmd.add_parser("video", help="Record the camera stream to an .mp4 on the computer.")
+    add_flir_capture_options(fv)
+    fv.add_argument("--duration", type=float, default=None,
+                    help="recording time in seconds (default: until Enter)")
+    fv.add_argument("--fps", type=float, default=None,
+                    help="frame rate (default: 10; up to ~95 at full size, if the "
+                         "computer keeps up)")
+    fv.add_argument("--codec", default="mp4v", help="FourCC of the video codec (default: mp4v)")
 
     # ======================================================================
     # analysis
@@ -289,7 +391,12 @@ def run_control(args):
         if args.camera:
             if args.photo_delay is not None and args.photo_interval is not None:
                 raise ValueError("use either --photo-delay or --photo-interval, not both")
-            main_ramp_camera({**camera_cfg(args), **ramp_cfg, "camera": args.camera,
+            extra = {}
+            if args.camera_type == "flir":
+                extra = {k: getattr(args, k, None) for k in FLIR_KEYS if k != "name"}
+                extra.pop("fps", None)
+            main_ramp_camera({**camera_cfg(args), **extra, **ramp_cfg, "camera": args.camera,
+                              "camera_type": args.camera_type,
                               "photo_delay": args.photo_delay,
                               "photo_interval": args.photo_interval,
                               "keep_on_card": args.keep_on_card})
@@ -312,6 +419,23 @@ def run_control(args):
             output_csv=output_csv_path(args.output_dir, "liv", args.output_csv)))
     elif args.command == "camera":
         run_camera(args)
+    elif args.command == "flir":
+        run_flir(args)
+
+
+def run_flir(args):
+    c = args.flir_command
+    if c == "list":
+        main_flir_list({"backend": args.backend})
+    elif c == "info":
+        main_flir_info({"serial": args.serial, "backend": args.backend})
+    elif c == "photo":
+        main_flir_photo(flir_cfg(args, interactive=args.interactive))
+    elif c == "timelapse":
+        main_flir_timelapse(flir_cfg(args, interval=args.interval, count=args.count,
+                                     duration=args.duration))
+    elif c == "video":
+        main_flir_video(flir_cfg(args, duration=args.duration, codec=args.codec))
 
 
 def run_camera(args):
@@ -378,6 +502,8 @@ def main(argv=None):
         if args.group == "control" and args.command == "camera":
             sys.exit("Interrupted; files captured so far are kept"
                      + (" and recording was stopped." if args.camera_command == "video" else "."))
+        if args.group == "control" and args.command == "flir":
+            sys.exit("Interrupted; files captured so far are kept.")
         sys.exit("Interrupted.")
     except Exception as e:
         sys.exit(f"Error: {e}")
