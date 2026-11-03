@@ -22,6 +22,8 @@ cfg = {
     # "photo_interval": 2.0,            # or: a photo every 2 s instead
     "shutter": "1/250", "iso": 100, "whitebalance": "Daylight",
     "sync_clock": True,
+    # FLIR Blackfly S instead of the Canon:
+    # "camera_type": "flir", "shutter": "1/250", "gain": 0, "whitebalance": "off",
 }
 
 try:

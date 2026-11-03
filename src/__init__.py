@@ -18,6 +18,10 @@ from .Canon.camera import CanonCamera
 from .Canon.capture import (main_camera_info, main_photo, main_timelapse, main_video,
                             next_index)
 from .Canon.ramp_camera import main_ramp_camera, photo_times
+# Safe to import: PySpin / Aravis are only loaded when the FLIR camera is opened.
+from .FLIR.camera import FlirCamera
+from .FLIR.capture import (main_flir_info, main_flir_list, main_flir_photo,
+                           main_flir_timelapse, main_flir_video)
 
 __all__ = [
     "DetectionConfig",
@@ -52,4 +56,10 @@ __all__ = [
     "next_index",
     "main_ramp_camera",
     "photo_times",
+    "FlirCamera",
+    "main_flir_list",
+    "main_flir_info",
+    "main_flir_photo",
+    "main_flir_timelapse",
+    "main_flir_video",
 ]

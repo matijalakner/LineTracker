@@ -1,4 +1,5 @@
-"""DC2200 current ramp with photos from the Canon EOS R10 at the same time.
+"""DC2200 current ramp with photos from the Canon EOS R10 (or the FLIR
+Blackfly S, camera_type="flir") at the same time.
 
     measurement control ramp --min 0.05 --max 1 --step 0.05 --step-time 100 --camera mysample
 
@@ -94,7 +95,8 @@ class RampPhotographer(threading.Thread):
                 k = min(int((start - self.t0) / self.step_time), len(self.sequence) - 1)
                 cycle, direction, current = self.sequence[k]
                 index = next_index(self.folder, self.name)
-                dest = numbered_path(self.folder, self.name, index, ".jpg")
+                dest = numbered_path(self.folder, self.name, index,
+                                      getattr(self.cam, "photo_suffix", ".jpg"))
                 self.cam.capture_photo(dest, keep_on_card=self.keep_on_card)
                 self.saved.append(dest)
                 if self.log_path:
@@ -127,7 +129,10 @@ def main_ramp_camera(cfg):
     cycles, output_csv) plus camera (the measurement name); optional
     photo_delay or photo_interval, input_dir, keep_on_card, sync_clock and the
     camera settings shutter, iso, whitebalance, colortemperature,
-    picturestyle, imageformat.
+    picturestyle, imageformat. With camera_type 'flir' the FLIR Blackfly S is
+    used instead (settings as in FLIR/capture.py: shutter, gain, whitebalance,
+    wb_red, wb_blue, gamma, black_level, pixel_format, serial, backend,
+    save_format).
 
     Returns (ramp rows, list of saved photos).
     """
@@ -141,7 +146,14 @@ def main_ramp_camera(cfg):
     log_path = photo_log_path(p["output_csv"]) if p["output_csv"] else None
 
     # Connect the camera first: if it is not there, the LED is never switched on.
-    cam = _connect(get)
+    camera_type = (get("camera_type") or "canon").lower()
+    if camera_type == "flir":
+        from ..FLIR.capture import _connect as connect_flir
+        cam = connect_flir(get)
+    elif camera_type == "canon":
+        cam = _connect(get)
+    else:
+        raise ValueError("camera_type must be canon or flir")
     rows, photographer = [], None
     try:
         cam.set_capture_target(card=bool(get("keep_on_card")))
